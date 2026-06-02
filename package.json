@@ -11,7 +11,7 @@
     ".": "./dist/src/index.js"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && node scripts/build-plugin-bundle.js",
     "test": "npm run build && node --test dist/tests/*.test.js",
     "test:offline": "npm test",
     "lint": "npm run build && node --check dist/src/cli.js && node --check dist/src/mcp-server.js",
@@ -34,6 +34,7 @@
   },
   "devDependencies": {
     "@types/node": "^24.10.1",
+    "esbuild": "^0.28.0",
     "typescript": "^5.9.3"
   },
   "license": "MIT",

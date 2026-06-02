@@ -65,6 +65,10 @@ npm run plugin:validate
 npm run pack:dry
 ```
 
+`dist/` is intentionally tracked for Git marketplace distribution. The plugin MCP server
+uses the bundled `dist/plugin/mcp-server.js`, so a Codex marketplace clone can start the
+server without running `npm install` first.
+
 ## Run offline with fake Codex
 
 ```bash
@@ -84,7 +88,8 @@ node dist/src/cli.js server
 ```
 
 The plugin manifest also exposes this server through `.mcp.json` as
-`codex-dynamic-workflows`.
+`codex-dynamic-workflows`. The marketplace path uses the bundled server at
+`dist/plugin/mcp-server.js`.
 
 Current tools:
 

@@ -4,7 +4,7 @@
       "type": "stdio",
       "command": "node",
       "args": [
-        "./dist/src/mcp-server.js"
+        "./dist/plugin/mcp-server.js"
       ],
       "note": "Local stdio MCP server for bounded Codex dynamic workflow validation, submission, status, result, cancellation, and artifact metadata."
     }

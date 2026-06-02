@@ -110,3 +110,9 @@ Workflows replacement.
   temporary `CODEX_HOME` passed; after pushing commit `d82d891`, `CODEX_HOME=$(mktemp
   -d) codex plugin marketplace add pezzos/codex-dynamic-workflows-lab --ref main`
   passed and `codex plugin marketplace list` showed `codex-dynamic-workflows-lab`.
+- `follow_up_runtime_fix`: the first marketplace fix made the repo discoverable, but a
+  Git marketplace clone still could not start the MCP server because `dist/` was not in
+  Git and dependencies were not installed in the marketplace cache. The runtime fix adds
+  a bundled MCP server at `dist/plugin/mcp-server.js`, points `.mcp.json` at it, tracks
+  `dist/` intentionally, and extends `npm run plugin:validate` with a JSON-RPC
+  `initialize` plus `tools/list` smoke.

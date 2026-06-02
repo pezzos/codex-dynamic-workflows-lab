@@ -1,5 +1,4 @@
 node_modules/
-dist/
 .codex-workflows/
 .tmp/
 *.tgz
