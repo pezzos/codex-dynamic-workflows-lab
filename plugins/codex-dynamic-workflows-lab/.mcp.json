@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "codex-dynamic-workflows": {
+      "type": "stdio",
+      "command": "node",
+      "args": [
+        "./dist/plugin/mcp-server.js"
+      ],
+      "note": "Local stdio MCP server for bounded Codex dynamic workflow validation, submission, status, result, cancellation, and artifact metadata."
+    }
+  }
+}

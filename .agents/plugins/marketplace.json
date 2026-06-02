@@ -1,20 +1,20 @@
 {
   "name": "codex-dynamic-workflows-lab",
+  "interface": {
+    "displayName": "Codex Dynamic Workflows Lab"
+  },
   "plugins": [
     {
       "name": "codex-dynamic-workflows-lab",
       "source": {
         "source": "local",
-        "path": "./"
+        "path": "./plugins/codex-dynamic-workflows-lab"
       },
       "policy": {
         "installation": "AVAILABLE",
         "authentication": "ON_INSTALL"
       },
-      "category": "Developer Tools",
-      "interface": {
-        "displayName": "Codex Dynamic Workflows Lab"
-      }
+      "category": "Developer Tools"
     }
   ]
 }
