@@ -15,6 +15,16 @@ import type {
 
 type AnyNode = Node & { [key: string]: any; start: number; end: number };
 
+const agentOptionKeys = new Set([
+  "label",
+  "phase",
+  "schema",
+  "model",
+  "sandbox",
+  "writeScope",
+  "timeoutMs",
+]);
+
 export interface RunWorkflowOptions {
   cwd: string;
   artifactRoot?: string;
@@ -237,7 +247,19 @@ export async function runWorkflow<T = unknown>(
 
 function normalizeAgentOptions(value: unknown): AgentOptions {
   if (!value || typeof value !== "object") return {};
-  const options = value as AgentOptions;
+  const options = value as AgentOptions & Record<string, unknown>;
+  for (const key of Object.keys(options)) {
+    if (!agentOptionKeys.has(key)) throw new Error(`unsupported agent option: ${key}`);
+  }
+  if (options.sandbox !== undefined && !["read-only", "workspace-write"].includes(String(options.sandbox))) {
+    throw new Error("agent sandbox must be read-only or workspace-write");
+  }
+  if (options.writeScope !== undefined && !["none", "worktree"].includes(String(options.writeScope))) {
+    throw new Error("agent writeScope must be none or worktree");
+  }
+  if (options.timeoutMs !== undefined && (typeof options.timeoutMs !== "number" || !Number.isFinite(options.timeoutMs))) {
+    throw new Error("agent timeoutMs must be a finite number");
+  }
   return {
     ...options,
     label: optionalString(options.label, "agent label"),
@@ -303,7 +325,7 @@ function assertDeterministicAst(node: AnyNode): void {
 function assertForbiddenAst(node: AnyNode): void {
   if (node.type === "ImportExpression") throw new Error("dynamic import is forbidden");
   if (isForbiddenProcessAccess(node)) throw new Error("process access is forbidden except process.cwd()");
-  if (isAgentWriteRequest(node)) throw new Error("workflow validation forbids worker write requests in MVP");
+  assertAgentOptionsAst(node);
   if (node.type === "CallExpression" && node.callee?.type === "Identifier" && ["eval", "require", "Function"].includes(node.callee.name)) {
     throw new Error(`${node.callee.name} is forbidden`);
   }
@@ -348,18 +370,22 @@ function isForbiddenProcessAccess(node: AnyNode): boolean {
   return propertyName(node.property) !== "cwd";
 }
 
-function isAgentWriteRequest(node: AnyNode): boolean {
-  if (node.type !== "CallExpression" || node.callee?.type !== "Identifier" || node.callee.name !== "agent") return false;
+function assertAgentOptionsAst(node: AnyNode): void {
+  if (node.type !== "CallExpression" || node.callee?.type !== "Identifier" || node.callee.name !== "agent") return;
   const options = node.arguments?.[1] as AnyNode | undefined;
-  if (options?.type !== "ObjectExpression") return false;
+  if (options?.type !== "ObjectExpression") return;
   for (const prop of options.properties as AnyNode[]) {
     if (prop.type !== "Property" || prop.computed || prop.kind !== "init" || prop.method) continue;
     const key = propertyName(prop.key as AnyNode);
     const value = prop.value as AnyNode;
-    if (key === "sandbox" && value.type === "Literal" && value.value === "workspace-write") return true;
-    if (key === "writeScope" && value.type === "Literal" && value.value === "worktree") return true;
+    if (!key || !agentOptionKeys.has(key)) throw new Error(`workflow validation forbids unsupported agent option: ${key ?? "unknown"}`);
+    if (key === "sandbox" && value.type === "Literal" && value.value === "workspace-write") {
+      throw new Error("workflow validation forbids worker write requests in MVP");
+    }
+    if (key === "writeScope" && value.type === "Literal" && value.value === "worktree") {
+      throw new Error("workflow validation forbids worker write requests in MVP");
+    }
   }
-  return false;
 }
 
 function isMemberExpression(node: AnyNode | undefined, objectName: string, propertyName: string): boolean {

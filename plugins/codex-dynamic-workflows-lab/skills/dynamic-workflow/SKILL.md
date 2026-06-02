@@ -32,8 +32,14 @@ Do not use for small single-file fixes or ordinary sequential work.
 
 1. Call `workflow_validate` with the script.
 2. If validation succeeds, call `workflow_submit` with an immutable read-only policy.
-3. Poll `workflow_status` or read `workflow_result`.
+   Submit returns immediately with `status: "submitted"`, `runId`, and `artifactRoot`.
+3. Poll `workflow_status` until the run is no longer `submitted` or `running`, then read
+   `workflow_result`.
 4. Use `workflow_artifacts` only for local artifact metadata.
+
+Unknown `agent()` option keys are rejected. Do not pass worker-level `policy` objects,
+`allowedTools`, `reasoningEffort`, or per-worker output limits unless the lab explicitly
+implements those options later.
 
 ## Minimal Script
 

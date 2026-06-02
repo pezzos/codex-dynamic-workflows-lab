@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
-import { access, readFile } from "node:fs/promises";
+import { access, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { dirname, join, normalize, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -52,9 +53,14 @@ assert(server?.type === "stdio", "MCP server must use stdio");
 assert(server?.command === "node", "MCP server command must be node");
 assert(server?.args?.[0] === "./dist/plugin/mcp-server.js", "MCP server must launch bundled dist/plugin/mcp-server.js");
 
-const smoke = await runMcpSmoke(server.command, server.args, marketplacePluginRoot);
+const submitSmokeRunId = `submit-smoke-${Date.now()}`;
+const submitSmokeArtifacts = await mkdtemp(join(tmpdir(), "codex-flow-plugin-artifacts-"));
+const smoke = await runMcpSmoke(server.command, server.args, marketplacePluginRoot, submitSmokeRunId, submitSmokeArtifacts);
 assert(smoke.includes("workflow_validate"), "MCP smoke must list workflow_validate");
-assert(smoke.includes(".codex-workflows-smoke"), "MCP smoke must resolve explicit artifact roots");
+assert(smoke.includes("smoke-run"), "MCP smoke must resolve explicit artifact roots");
+assert(smoke.includes("\"status\":\"submitted\"") || smoke.includes('"status": "submitted"'), "MCP smoke must submit asynchronously");
+const smokeSummary = await waitForJson(join(submitSmokeArtifacts, "runs", submitSmokeRunId, "summary.json"));
+assert(smokeSummary?.result === "fake-result:plugin smoke", "MCP submit smoke must complete detached fake workflow");
 
 console.log(JSON.stringify({ ok: true, plugin: plugin.name, marketplace: marketplace.name }, null, 2));
 
@@ -69,7 +75,7 @@ assert(candidate.interface?.logo === "./assets/workflow-logo.png", "plugin must 
 assert(candidate.interface?.composerIcon === "./assets/workflow-logo.png", "plugin must declare workflow composer icon");
 }
 
-function runMcpSmoke(command, args, cwd) {
+function runMcpSmoke(command, args, cwd, submitSmokeRunId, submitSmokeArtifacts) {
   return new Promise((resolveSmoke, rejectSmoke) => {
     const child = spawn(command, args, { cwd, stdio: ["pipe", "pipe", "pipe"] });
     let stdout = "";
@@ -93,8 +99,10 @@ function runMcpSmoke(command, args, cwd) {
       if (code !== 0) rejectSmoke(new Error(`MCP smoke exited ${code}: ${stderr}`));
       else resolveSmoke(stdout);
     });
-    child.stdin.end(
-      [
+    void (async () => {
+      const fakeCodex = await writeFakeCodex();
+      child.stdin.end(
+        [
         JSON.stringify({
           jsonrpc: "2.0",
           id: 1,
@@ -108,11 +116,67 @@ function runMcpSmoke(command, args, cwd) {
           method: "tools/call",
           params: {
             name: "workflow_artifacts",
-            arguments: { artifacts: join(cwd, ".codex-workflows-smoke"), runId: "smoke-run" },
+            arguments: { artifacts: submitSmokeArtifacts, runId: "smoke-run" },
+          },
+        }),
+        JSON.stringify({
+          jsonrpc: "2.0",
+          id: 4,
+          method: "tools/call",
+          params: {
+            name: "workflow_submit",
+            arguments: {
+              script: [
+                'export const meta = { name: "submit_smoke", description: "submit smoke" }',
+                'return await agent("plugin smoke", { label: "smoke" })',
+              ].join("\n"),
+              cwd,
+              artifacts: submitSmokeArtifacts,
+              policy: { maxAgents: 1, concurrency: 1 },
+              runId: submitSmokeRunId,
+              codexBin: fakeCodex,
+            },
           },
         }),
         "",
-      ].join("\n"),
-    );
+        ].join("\n"),
+      );
+    })().catch((error) => {
+      clearTimeout(timeout);
+      child.kill("SIGKILL");
+      rejectSmoke(error);
+    });
   });
+}
+
+async function writeFakeCodex() {
+  const dir = await mkdtemp(join(tmpdir(), "codex-flow-plugin-smoke-"));
+  const fakeCodex = join(dir, "fake-codex.js");
+  await writeFile(
+    fakeCodex,
+    [
+      "#!/usr/bin/env node",
+      "let stdin = '';",
+      "process.stdin.setEncoding('utf8');",
+      "process.stdin.on('data', chunk => stdin += chunk);",
+      "process.stdin.on('end', () => {",
+      "  console.log(JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: `fake-result:${stdin.slice(0, 80)}` } }));",
+      "});",
+      "",
+    ].join("\n"),
+    { mode: 0o700 },
+  );
+  return fakeCodex;
+}
+
+async function waitForJson(path) {
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline) {
+    try {
+      return JSON.parse(await readFile(path, "utf8"));
+    } catch {
+      await new Promise((resolveWait) => setTimeout(resolveWait, 50));
+    }
+  }
+  throw new Error(`timed out waiting for ${path}`);
 }

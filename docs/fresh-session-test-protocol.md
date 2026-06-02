@@ -102,6 +102,8 @@ Unsafe constructs:
 - `await import("node:fs")`;
 - `process.env`;
 - request to widen read-only policy into `workspace-write`.
+- nested or unknown worker options such as `policy: { sandbox: "workspace-write" }`,
+  `allowedTools`, `reasoningEffort`, or per-worker output limits.
 
 ## Wave 3: Comparative Value Tests
 
@@ -264,6 +266,9 @@ Pass ARTIFACT_ROOT as the workflow artifact root so the test does not create
 `.codex-workflows` or other generated files inside TARGET_REPO.
 Use policy `secrets: "codex-auth-only"` for real workers, and verify in the artifacts
 that only failure/output logs are recorded, not raw auth contents.
+Treat `workflow_submit` as non-blocking. Record the immediate `runId`, then poll
+`workflow_status` until `summary.json` is present and read `workflow_result`. A submit
+call returning before worker completion is expected behavior.
 
 Wave 4: Safety probes:
 Use Dynamic Workflow if available; otherwise run as a read-only reasoning baseline.

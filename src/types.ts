@@ -35,12 +35,9 @@ export interface AgentOptions {
   phase?: string;
   schema?: JsonSchema;
   model?: string;
-  reasoningEffort?: "low" | "medium" | "high" | "xhigh";
   sandbox?: "read-only" | "workspace-write";
   writeScope?: "none" | "worktree";
   timeoutMs?: number;
-  maxOutputBytes?: number;
-  allowedTools?: string[];
 }
 
 export interface WorkflowPolicy {

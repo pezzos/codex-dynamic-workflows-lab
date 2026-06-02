@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 
 // src/mcp-server.ts
-import { readFile as readFile3 } from "node:fs/promises";
+import { spawn as spawn2 } from "node:child_process";
+import { access, mkdir as mkdir3, readFile as readFile3, writeFile as writeFile3 } from "node:fs/promises";
 import { join as join3, resolve as resolve3 } from "node:path";
+import { fileURLToPath } from "node:url";
 
 // src/artifacts.ts
 import { mkdir, readFile, writeFile, appendFile, lstat, realpath } from "node:fs/promises";
@@ -6095,6 +6097,15 @@ function parse3(input, options) {
 }
 
 // src/workflow.ts
+var agentOptionKeys = /* @__PURE__ */ new Set([
+  "label",
+  "phase",
+  "schema",
+  "model",
+  "sandbox",
+  "writeScope",
+  "timeoutMs"
+]);
 function parseWorkflowScript(script) {
   const ast = parse3(script, {
     ecmaVersion: "latest",
@@ -6277,6 +6288,18 @@ ${body}
 function normalizeAgentOptions(value) {
   if (!value || typeof value !== "object") return {};
   const options = value;
+  for (const key of Object.keys(options)) {
+    if (!agentOptionKeys.has(key)) throw new Error(`unsupported agent option: ${key}`);
+  }
+  if (options.sandbox !== void 0 && !["read-only", "workspace-write"].includes(String(options.sandbox))) {
+    throw new Error("agent sandbox must be read-only or workspace-write");
+  }
+  if (options.writeScope !== void 0 && !["none", "worktree"].includes(String(options.writeScope))) {
+    throw new Error("agent writeScope must be none or worktree");
+  }
+  if (options.timeoutMs !== void 0 && (typeof options.timeoutMs !== "number" || !Number.isFinite(options.timeoutMs))) {
+    throw new Error("agent timeoutMs must be a finite number");
+  }
   return {
     ...options,
     label: optionalString(options.label, "agent label"),
@@ -6338,7 +6361,7 @@ function assertDeterministicAst(node) {
 function assertForbiddenAst(node) {
   if (node.type === "ImportExpression") throw new Error("dynamic import is forbidden");
   if (isForbiddenProcessAccess(node)) throw new Error("process access is forbidden except process.cwd()");
-  if (isAgentWriteRequest(node)) throw new Error("workflow validation forbids worker write requests in MVP");
+  assertAgentOptionsAst(node);
   if (node.type === "CallExpression" && node.callee?.type === "Identifier" && ["eval", "require", "Function"].includes(node.callee.name)) {
     throw new Error(`${node.callee.name} is forbidden`);
   }
@@ -6376,18 +6399,22 @@ function isForbiddenProcessAccess(node) {
   if (node.type !== "MemberExpression" || node.object?.type !== "Identifier" || node.object.name !== "process") return false;
   return propertyName(node.property) !== "cwd";
 }
-function isAgentWriteRequest(node) {
-  if (node.type !== "CallExpression" || node.callee?.type !== "Identifier" || node.callee.name !== "agent") return false;
+function assertAgentOptionsAst(node) {
+  if (node.type !== "CallExpression" || node.callee?.type !== "Identifier" || node.callee.name !== "agent") return;
   const options = node.arguments?.[1];
-  if (options?.type !== "ObjectExpression") return false;
+  if (options?.type !== "ObjectExpression") return;
   for (const prop of options.properties) {
     if (prop.type !== "Property" || prop.computed || prop.kind !== "init" || prop.method) continue;
     const key = propertyName(prop.key);
     const value = prop.value;
-    if (key === "sandbox" && value.type === "Literal" && value.value === "workspace-write") return true;
-    if (key === "writeScope" && value.type === "Literal" && value.value === "worktree") return true;
+    if (!key || !agentOptionKeys.has(key)) throw new Error(`workflow validation forbids unsupported agent option: ${key ?? "unknown"}`);
+    if (key === "sandbox" && value.type === "Literal" && value.value === "workspace-write") {
+      throw new Error("workflow validation forbids worker write requests in MVP");
+    }
+    if (key === "writeScope" && value.type === "Literal" && value.value === "worktree") {
+      throw new Error("workflow validation forbids worker write requests in MVP");
+    }
   }
-  return false;
 }
 function isMemberExpression(node, objectName, propertyName2) {
   return node?.type === "MemberExpression" && node.object?.type === "Identifier" && node.object.name === objectName && (node.property?.type === "Identifier" && node.property.name === propertyName2 || node.property?.type === "Literal" && node.property.value === propertyName2);
@@ -6439,7 +6466,8 @@ function assertStructuredCloneable(value) {
 
 // src/mcp-server.ts
 var protocolVersion = "2025-06-18";
-var serverVersion = "0.1.4";
+var serverVersion = "0.1.5";
+var entryPath = fileURLToPath(import.meta.url);
 async function startMcpServer() {
   process.stdin.setEncoding("utf8");
   let buffer = "";
@@ -6478,7 +6506,7 @@ async function dispatch(request) {
     return {
       tools: [
         tool("workflow_validate", "Validate a deterministic workflow script without side effects."),
-        tool("workflow_submit", "Submit a bounded local workflow job."),
+        tool("workflow_submit", "Start a bounded local workflow job and return a run id for polling."),
         tool("workflow_status", "Read a workflow run summary."),
         tool("workflow_result", "Read a completed workflow result."),
         tool("workflow_cancel", "Request cancellation for a workflow run."),
@@ -6540,23 +6568,54 @@ async function callTool(name, args) {
     const policy = normalizePolicy(args.policy);
     const parsed = parseWorkflowScript(String(args.script ?? ""));
     const runId = String(args.runId ?? `${parsed.meta.name}-${Date.now()}`);
-    const store = new ArtifactStore({ root: artifactRoot, runId });
-    const runner = new CodexExecRunner({ cwd, store, policy, codexBin: args.codexBin });
-    const result = await runWorkflow(String(args.script), {
+    const runRoot = join3(artifactRoot, "runs", runId);
+    if (await pathExists(runRoot)) throw new Error(`workflow run already exists: ${runId}`);
+    await mkdir3(runRoot, { recursive: true });
+    const jobPath = join3(runRoot, "mcp-job.json");
+    await writeStatus(runRoot, { runId, status: "submitted", meta: parsed.meta, artifactRoot: runRoot, startedAt: (/* @__PURE__ */ new Date()).toISOString() });
+    await writeFile3(
+      jobPath,
+      JSON.stringify(
+        {
+          script: String(args.script ?? ""),
+          cwd,
+          artifactRoot,
+          runId,
+          args: args.args,
+          policy,
+          codexBin: args.codexBin
+        },
+        null,
+        2
+      ),
+      "utf8"
+    );
+    const child = spawn2(process.execPath, [entryPath, "--run-workflow-job", jobPath], {
       cwd,
-      artifactRoot,
-      runId,
-      args: args.args,
-      policy,
-      runner
+      detached: true,
+      stdio: "ignore"
     });
-    return text(result);
+    child.unref();
+    return text({
+      runId,
+      status: "submitted",
+      meta: parsed.meta,
+      artifactRoot: runRoot,
+      next: ["workflow_status", "workflow_result", "workflow_artifacts"]
+    });
   }
   if (name === "workflow_status" || name === "workflow_result") {
     if (!args.artifacts) throw new Error(`${name} requires artifacts`);
     if (!args.runId) throw new Error(`${name} requires runId`);
     const artifactRoot = resolve3(String(args.artifacts));
-    const summary = JSON.parse(await readFile3(join3(artifactRoot, "runs", String(args.runId), "summary.json"), "utf8"));
+    const runId = String(args.runId);
+    const runRoot = join3(artifactRoot, "runs", runId);
+    const summary = await readSummary(runRoot);
+    if (!summary) {
+      const status = await readStatus(runRoot) ?? { runId, status: "not_found", artifactRoot: runRoot };
+      if (name === "workflow_result") throw new Error(`workflow_result is not ready for ${runId}`);
+      return text(status);
+    }
     return text(summary);
   }
   if (name === "workflow_cancel") {
@@ -6570,6 +6629,94 @@ async function callTool(name, args) {
   }
   throw new Error(`unknown tool: ${name}`);
 }
+async function readSummary(runRoot) {
+  try {
+    return JSON.parse(await readFile3(join3(runRoot, "summary.json"), "utf8"));
+  } catch {
+    return void 0;
+  }
+}
+async function pathExists(path) {
+  try {
+    await access(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+async function readStatus(runRoot) {
+  try {
+    return JSON.parse(await readFile3(join3(runRoot, "status.json"), "utf8"));
+  } catch {
+    return void 0;
+  }
+}
+async function writeStatus(runRoot, status) {
+  await mkdir3(runRoot, { recursive: true });
+  await writeFile3(join3(runRoot, "status.json"), JSON.stringify(status, null, 2), "utf8");
+}
+async function runWorkflowJob(jobPath) {
+  const job = JSON.parse(await readFile3(jobPath, "utf8"));
+  const parsed = parseWorkflowScript(job.script);
+  const runRoot = join3(job.artifactRoot, "runs", job.runId);
+  const startedAt = (/* @__PURE__ */ new Date()).toISOString();
+  await writeStatus(runRoot, { runId: job.runId, status: "running", meta: parsed.meta, artifactRoot: runRoot, startedAt });
+  const store = new ArtifactStore({ root: job.artifactRoot, runId: job.runId });
+  const runner = new CodexExecRunner({ cwd: job.cwd, store, policy: job.policy, codexBin: job.codexBin });
+  try {
+    const result = await runWorkflow(job.script, {
+      cwd: job.cwd,
+      artifactRoot: job.artifactRoot,
+      runId: job.runId,
+      args: job.args,
+      policy: job.policy,
+      runner
+    });
+    await writeStatus(runRoot, {
+      runId: job.runId,
+      status: "completed",
+      meta: result.meta,
+      artifactRoot: result.artifactRoot,
+      startedAt,
+      completedAt: (/* @__PURE__ */ new Date()).toISOString(),
+      durationMs: result.durationMs
+    });
+  } catch (error) {
+    await writeFailureSummary(job.artifactRoot, job.runId, parsed.meta, error);
+  }
+}
+async function writeFailureSummary(artifactRoot, runId, meta, error) {
+  const runRoot = join3(artifactRoot, "runs", runId);
+  const message = redactText(error instanceof Error ? error.message : String(error));
+  await mkdir3(runRoot, { recursive: true });
+  await writeStatus(runRoot, {
+    runId,
+    status: "failed",
+    meta,
+    artifactRoot: runRoot,
+    completedAt: (/* @__PURE__ */ new Date()).toISOString(),
+    warnings: [message]
+  });
+  await writeFile3(
+    join3(runRoot, "summary.json"),
+    JSON.stringify(
+      {
+        runId,
+        status: "failed",
+        meta,
+        phases: [],
+        logs: [],
+        agentCount: 0,
+        durationMs: 0,
+        warnings: [message],
+        result: null
+      },
+      null,
+      2
+    ),
+    "utf8"
+  );
+}
 function text(value) {
   return {
     content: [{ type: "text", text: JSON.stringify(value, null, 2) }],
@@ -6580,7 +6727,11 @@ function send(message) {
   process.stdout.write(`${JSON.stringify(message)}
 `);
 }
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (import.meta.url === `file://${process.argv[1]}` && process.argv[2] === "--run-workflow-job") {
+  const jobPath = process.argv[3];
+  if (!jobPath) throw new Error("--run-workflow-job requires a job path");
+  await runWorkflowJob(jobPath);
+} else if (import.meta.url === `file://${process.argv[1]}`) {
   await startMcpServer();
 }
 export {

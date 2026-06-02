@@ -251,3 +251,29 @@ Workflows replacement.
   `codex-auth-only` is implemented, unit-tested, and live-smoke-tested, while live
   multi-agent performance still needs to be rerun.
 - `version`: bumped plugin package, manifests, and MCP server version to `0.1.4`.
+
+## Fix 2026-06-02 - Async MCP submit and strict agent options
+
+- `status`: done
+- `input_report`: campaign `dwave-2026-06-02-bannergen` on `BannerGenerator`.
+- `normal_findings`: Wave 2 passes, real Dynamic Workflow workers now complete, target
+  repo stays clean, and Dynamic Workflow produces the strongest traceability evidence.
+  The remaining product issues are submit ergonomics and validation clarity.
+- `root_causes`: `workflow_submit` blocked until full workflow completion, which can
+  exceed the Codex app MCP/tool timeout even though artifacts are later written. The
+  validator also accepted nested `agent(..., { policy: { sandbox: "workspace-write" } })`
+  because runtime sandboxing only reads top-level `sandbox`; this was confusing ignored
+  input, not an effective workspace-write escape.
+- `fixes`: make MCP `workflow_submit` write durable `status.json` and `mcp-job.json`,
+  start the workflow in a detached local job process, and return immediately with
+  `status: "submitted"`, `runId`, and `artifactRoot`. `workflow_status` now returns
+  submitted/running state before `summary.json` exists, and `workflow_result` reports
+  not-ready until completion. Workflow validation now rejects unknown `agent()` option
+  keys and accepted-but-unimplemented options such as worker-level `policy`,
+  `allowedTools`, `reasoningEffort`, and per-worker output limits.
+- `tests`: added MCP regression coverage for immediate submit response, status polling
+  from a fresh MCP server, final result polling, detached long-worker completion, and
+  strict agent option validation for literal and dynamic workflow options.
+- `security_note`: generic artifact DLP remains a documented limitation and test-plan
+  item. The current code avoids overclaiming broad DLP guarantees.
+- `version`: bumped plugin package, manifests, and MCP server version to `0.1.5`.

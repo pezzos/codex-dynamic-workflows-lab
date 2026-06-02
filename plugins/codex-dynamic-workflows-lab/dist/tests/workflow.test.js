@@ -54,11 +54,25 @@ test("parseWorkflowScript rejects worker write requests during validation", () =
     for (const options of [
         '{ label: "write", sandbox: "workspace-write" }',
         '{ label: "write", writeScope: "worktree" }',
+        '{ label: "write", policy: { sandbox: "workspace-write" } }',
     ]) {
         assert.throws(() => parseWorkflowScript(`
 export const meta = { name: "bad_write", description: "bad" }
 return agent("write", ${options})
-`), /forbids worker write requests/, options);
+`), /forbids worker write requests|unsupported agent option/, options);
+    }
+});
+test("parseWorkflowScript rejects unsupported literal agent options", () => {
+    for (const options of [
+        '{ label: "probe", unexpected: true }',
+        '{ label: "probe", allowedTools: ["shell"] }',
+        '{ label: "probe", maxOutputBytes: 1024 }',
+        '{ label: "probe", reasoningEffort: "high" }',
+    ]) {
+        assert.throws(() => parseWorkflowScript(`
+export const meta = { name: "bad_option", description: "bad" }
+return agent("probe", ${options})
+`), /unsupported agent option/, options);
     }
 });
 test("parseWorkflowScript accepts explicit read-only worker requests", () => {
@@ -100,6 +114,21 @@ return { value }
         runner: fakeRunner,
         policy: { mode: "read-only" },
     }), /forbids worker write requests/);
+});
+test("runWorkflow rejects dynamic unsupported agent options", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "codex-flow-test-"));
+    await assert.rejects(() => runWorkflow(`
+export const meta = { name: "dynamic_bad_option", description: "Demo workflow" }
+const options = { label: "probe" }
+options.policy = { sandbox: "workspace-write" }
+const value = await agent("probe", options)
+return { value }
+`, {
+        cwd: dir,
+        artifactRoot: join(dir, "artifacts"),
+        runner: fakeRunner,
+        policy: { maxAgents: 1, concurrency: 1 },
+    }), /unsupported agent option: policy/);
 });
 test("runWorkflow redacts runner results in agent and summary artifacts", async () => {
     const dir = await mkdtemp(join(tmpdir(), "codex-flow-test-"));

@@ -1,12 +1,16 @@
 #!/usr/bin/env node
-import { readFile } from "node:fs/promises";
+import { spawn } from "node:child_process";
+import { access, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { ArtifactStore } from "./artifacts.js";
 import { CodexExecRunner } from "./codex-runner.js";
 import { normalizePolicy } from "./policy.js";
+import { redactText } from "./redaction.js";
 import { parseWorkflowScript, runWorkflow } from "./workflow.js";
 const protocolVersion = "2025-06-18";
-const serverVersion = "0.1.4";
+const serverVersion = "0.1.5";
+const entryPath = fileURLToPath(import.meta.url);
 export async function startMcpServer() {
     process.stdin.setEncoding("utf8");
     let buffer = "";
@@ -48,7 +52,7 @@ async function dispatch(request) {
         return {
             tools: [
                 tool("workflow_validate", "Validate a deterministic workflow script without side effects."),
-                tool("workflow_submit", "Submit a bounded local workflow job."),
+                tool("workflow_submit", "Start a bounded local workflow job and return a run id for polling."),
                 tool("workflow_status", "Read a workflow run summary."),
                 tool("workflow_result", "Read a completed workflow result."),
                 tool("workflow_cancel", "Request cancellation for a workflow run."),
@@ -112,17 +116,34 @@ async function callTool(name, args) {
         const policy = normalizePolicy(args.policy);
         const parsed = parseWorkflowScript(String(args.script ?? ""));
         const runId = String(args.runId ?? `${parsed.meta.name}-${Date.now()}`);
-        const store = new ArtifactStore({ root: artifactRoot, runId });
-        const runner = new CodexExecRunner({ cwd, store, policy, codexBin: args.codexBin });
-        const result = await runWorkflow(String(args.script), {
+        const runRoot = join(artifactRoot, "runs", runId);
+        if (await pathExists(runRoot))
+            throw new Error(`workflow run already exists: ${runId}`);
+        await mkdir(runRoot, { recursive: true });
+        const jobPath = join(runRoot, "mcp-job.json");
+        await writeStatus(runRoot, { runId, status: "submitted", meta: parsed.meta, artifactRoot: runRoot, startedAt: new Date().toISOString() });
+        await writeFile(jobPath, JSON.stringify({
+            script: String(args.script ?? ""),
             cwd,
             artifactRoot,
             runId,
             args: args.args,
             policy,
-            runner,
+            codexBin: args.codexBin,
+        }, null, 2), "utf8");
+        const child = spawn(process.execPath, [entryPath, "--run-workflow-job", jobPath], {
+            cwd,
+            detached: true,
+            stdio: "ignore",
         });
-        return text(result);
+        child.unref();
+        return text({
+            runId,
+            status: "submitted",
+            meta: parsed.meta,
+            artifactRoot: runRoot,
+            next: ["workflow_status", "workflow_result", "workflow_artifacts"],
+        });
     }
     if (name === "workflow_status" || name === "workflow_result") {
         if (!args.artifacts)
@@ -130,7 +151,15 @@ async function callTool(name, args) {
         if (!args.runId)
             throw new Error(`${name} requires runId`);
         const artifactRoot = resolve(String(args.artifacts));
-        const summary = JSON.parse(await readFile(join(artifactRoot, "runs", String(args.runId), "summary.json"), "utf8"));
+        const runId = String(args.runId);
+        const runRoot = join(artifactRoot, "runs", runId);
+        const summary = await readSummary(runRoot);
+        if (!summary) {
+            const status = (await readStatus(runRoot)) ?? { runId, status: "not_found", artifactRoot: runRoot };
+            if (name === "workflow_result")
+                throw new Error(`workflow_result is not ready for ${runId}`);
+            return text(status);
+        }
         return text(summary);
     }
     if (name === "workflow_cancel") {
@@ -146,6 +175,90 @@ async function callTool(name, args) {
     }
     throw new Error(`unknown tool: ${name}`);
 }
+async function readSummary(runRoot) {
+    try {
+        return JSON.parse(await readFile(join(runRoot, "summary.json"), "utf8"));
+    }
+    catch {
+        return undefined;
+    }
+}
+async function pathExists(path) {
+    try {
+        await access(path);
+        return true;
+    }
+    catch {
+        return false;
+    }
+}
+async function readStatus(runRoot) {
+    try {
+        return JSON.parse(await readFile(join(runRoot, "status.json"), "utf8"));
+    }
+    catch {
+        return undefined;
+    }
+}
+async function writeStatus(runRoot, status) {
+    await mkdir(runRoot, { recursive: true });
+    await writeFile(join(runRoot, "status.json"), JSON.stringify(status, null, 2), "utf8");
+}
+async function runWorkflowJob(jobPath) {
+    const job = JSON.parse(await readFile(jobPath, "utf8"));
+    const parsed = parseWorkflowScript(job.script);
+    const runRoot = join(job.artifactRoot, "runs", job.runId);
+    const startedAt = new Date().toISOString();
+    await writeStatus(runRoot, { runId: job.runId, status: "running", meta: parsed.meta, artifactRoot: runRoot, startedAt });
+    const store = new ArtifactStore({ root: job.artifactRoot, runId: job.runId });
+    const runner = new CodexExecRunner({ cwd: job.cwd, store, policy: job.policy, codexBin: job.codexBin });
+    try {
+        const result = await runWorkflow(job.script, {
+            cwd: job.cwd,
+            artifactRoot: job.artifactRoot,
+            runId: job.runId,
+            args: job.args,
+            policy: job.policy,
+            runner,
+        });
+        await writeStatus(runRoot, {
+            runId: job.runId,
+            status: "completed",
+            meta: result.meta,
+            artifactRoot: result.artifactRoot,
+            startedAt,
+            completedAt: new Date().toISOString(),
+            durationMs: result.durationMs,
+        });
+    }
+    catch (error) {
+        await writeFailureSummary(job.artifactRoot, job.runId, parsed.meta, error);
+    }
+}
+async function writeFailureSummary(artifactRoot, runId, meta, error) {
+    const runRoot = join(artifactRoot, "runs", runId);
+    const message = redactText(error instanceof Error ? error.message : String(error));
+    await mkdir(runRoot, { recursive: true });
+    await writeStatus(runRoot, {
+        runId,
+        status: "failed",
+        meta,
+        artifactRoot: runRoot,
+        completedAt: new Date().toISOString(),
+        warnings: [message],
+    });
+    await writeFile(join(runRoot, "summary.json"), JSON.stringify({
+        runId,
+        status: "failed",
+        meta,
+        phases: [],
+        logs: [],
+        agentCount: 0,
+        durationMs: 0,
+        warnings: [message],
+        result: null,
+    }, null, 2), "utf8");
+}
 function text(value) {
     return {
         content: [{ type: "text", text: JSON.stringify(value, null, 2) }],
@@ -155,6 +268,12 @@ function text(value) {
 function send(message) {
     process.stdout.write(`${JSON.stringify(message)}\n`);
 }
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (import.meta.url === `file://${process.argv[1]}` && process.argv[2] === "--run-workflow-job") {
+    const jobPath = process.argv[3];
+    if (!jobPath)
+        throw new Error("--run-workflow-job requires a job path");
+    await runWorkflowJob(jobPath);
+}
+else if (import.meta.url === `file://${process.argv[1]}`) {
     await startMcpServer();
 }

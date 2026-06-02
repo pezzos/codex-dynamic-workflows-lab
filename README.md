@@ -108,6 +108,12 @@ Current tools:
 - `workflow_cancel`
 - `workflow_artifacts`
 
+`workflow_submit` is intentionally non-blocking. It writes a durable run status and
+starts the workflow in a detached local job, then returns `runId`, `status: "submitted"`,
+and `artifactRoot`. Use `workflow_status` while the run is active and
+`workflow_result` once `summary.json` exists. This avoids Codex app tool-call timeouts
+on long multi-worker runs.
+
 ## Safety model
 
 The runtime enforces an immutable policy outside the worker. The MVP defaults to:
@@ -122,6 +128,10 @@ The runtime enforces an immutable policy outside the worker. The MVP defaults to
 - optional `secrets: "codex-auth-only"` mode that copies only `auth.json` from the
   parent Codex home into the temporary worker `CODEX_HOME`;
 - bounded max agents, concurrency, duration, and output size.
+
+Workflow validation rejects unknown `agent()` option keys, including worker-level
+`policy` objects. Per-worker policy widening is unsupported; use the top-level workflow
+policy and the supported `sandbox`, `writeScope`, `model`, and `timeoutMs` options only.
 
 `codex-auth-only` resolves the parent Codex home from `CODEX_HOME` when set, otherwise
 from `$HOME/.codex`. It rejects symlinked or non-regular `auth.json` files, copies only
@@ -141,9 +151,9 @@ resource actions.
 
 These branches are not validated yet:
 
-- a successful comparative multi-worker campaign after the 0.1.4 auth fix;
+- a successful comparative multi-worker campaign after the auth and async-submit fixes;
 - write mode in isolated worktrees;
-- full `workflow_submit` calls from an actual Codex MCP client;
+- full detached `workflow_submit` plus polling from an actual Codex MCP client;
 - process-tree termination for worker children and grandchildren;
 
 ## Related article
