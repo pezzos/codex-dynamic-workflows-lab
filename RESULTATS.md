@@ -277,3 +277,36 @@ Workflows replacement.
 - `security_note`: generic artifact DLP remains a documented limitation and test-plan
   item. The current code avoids overclaiming broad DLP guarantees.
 - `version`: bumped plugin package, manifests, and MCP server version to `0.1.5`.
+
+## Update 2026-06-02 - Current project state after comparative campaign
+
+- `status`: experimental but materially stronger than the first MVP.
+- `input_report`: campaign `dwave-2026-06-02-bannergen` on
+  `/Users/alexandrepezzotta/repos/BannerGenerator`.
+- `current_validated_state`: the lab validates deterministic workflows, rejects common
+  unsafe constructs and policy widening, installs through a Codex marketplace, exposes
+  MCP tools, propagates local Codex auth through `codex-auth-only`, and can complete real
+  authenticated read-only workers.
+- `campaign_result`: a real four-worker Dynamic Workflow review completed in
+  `185635` ms, wrote 27 local artifact files under the lab artifact root, kept the target
+  repo clean, and produced repo findings comparable to the manual multi-agent baseline.
+- `comparison_result`: Dynamic Workflow was strongest for reproducibility and
+  traceability because it preserved prompts, commands, stdout/stderr logs, last-message
+  fallbacks, worker result JSON, policy hash, events, and summary in one run tree. Manual
+  multi-agent review remains a strong analysis-quality baseline and should still be used
+  to challenge claims.
+- `target_findings_observed`: the comparison surfaced a tracked
+  `.codex-browser/auth.json` credential-surface risk, ignored local `.env` files inside
+  the worktree, `make` targets that do not cover the main frontend/backend test suites,
+  large coordination modules, and documentation drift.
+- `token_cost_note`: this lab consumed a large number of tokens across failed worker
+  campaigns, manual comparison agents, successful multi-worker runs, and follow-up fixes.
+  Exact aggregate token usage is not available because the single-agent and manual-role
+  baselines were not centrally instrumented, and some worker stdout exceeded policy. Any
+  future performance article claim must capture token usage per method and per worker.
+- `remaining_limits`: write-mode worktrees, process-tree termination, formal artifact DLP,
+  lower-noise worker output capture, repeat campaigns through the `0.1.5` detached
+  submit/poll contract, and strict timing/token accounting across all comparison methods.
+- `article_claim`: the defensible claim is now that Codex Dynamic Workflows Lab improves
+  traceability and repeatability for bounded read-only multi-agent runs. Do not claim
+  production-ready safety, lower cost, or general analysis superiority.

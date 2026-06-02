@@ -9,10 +9,15 @@ internals.
 
 ## Status
 
-- Plugin: local marketplace-ready experimental MVP
+- Current version: `0.1.5`
+- Plugin: Codex marketplace-ready experimental lab
 - Public-safety status: published as an experimental reader-facing lab artifact
+- Real workers: authenticated read-only `codex exec` smoke and one four-worker
+  comparative campaign have completed
 - Writes: read-only by default; write mode is not validated for production use
 - Network/connectors: disabled in policy
+- Token/cost status: multi-agent campaigns are expensive; aggregate token usage has not
+  yet been centrally instrumented
 
 ## Install
 
@@ -87,6 +92,25 @@ fresh Codex session. The protocol includes deterministic function tests, compara
 prompts for normal Codex versus manual multi-agent versus Dynamic Workflow runs, and
 read-only safety probes for article evidence.
 
+Current campaign evidence:
+
+- Wave 2 deterministic validation passes for CLI validation, fake runs,
+  `npm run plugin:validate`, deterministic-guard probes, policy rejection, and strict
+  worker option validation.
+- A real four-worker Dynamic Workflow review of `BannerGenerator` completed in
+  185,635 ms and wrote 27 local artifact files under the lab artifact root while leaving
+  the target repo clean.
+- In that campaign, Dynamic Workflow produced the strongest traceability and
+  reproducibility evidence. Manual multi-agent review remains a strong quality baseline,
+  so the current claim is traceability/repeatability, not general analysis superiority.
+- The campaign surfaced practical findings in the target repo: tracked
+  `.codex-browser/auth.json` risk, local ignored `.env` files, incomplete `make` test
+  coverage for frontend/backend suites, large coordination modules, and documentation
+  drift.
+- Token use was high across failed campaigns, manual comparison agents, real multi-worker
+  runs, and fixes. Exact aggregate usage is not available yet because not every method
+  was centrally instrumented and some worker stdout hit policy limits.
+
 ## MCP server
 
 The package exposes a stdio MCP server:
@@ -151,17 +175,22 @@ resource actions.
 
 These branches are not validated yet:
 
-- a successful comparative multi-worker campaign after the auth and async-submit fixes;
 - write mode in isolated worktrees;
-- full detached `workflow_submit` plus polling from an actual Codex MCP client;
+- repeat comparative multi-worker campaigns through the `0.1.5` detached
+  `workflow_submit` plus polling contract;
 - process-tree termination for worker children and grandchildren;
+- formal artifact DLP that fails on raw credential-shaped values;
+- strict duration and token accounting across single prompt, manual roles, and Dynamic
+  Workflow runs;
 
 ## Related article
 
-This repository is the evidence artifact for a Project Pezzos draft article about
-adapting Claude Code-style Dynamic Workflows to Codex surfaces. The article remains a
-draft until comparative real-worker runs, write-mode, full MCP client path,
-process-tree kill, and authenticated campaign paths are validated.
+This repository is the evidence artifact for the Project Pezzos article about adapting
+Claude Code-style Dynamic Workflows to Codex surfaces:
+https://project-pezzos.com/journal/codex-dynamic-workflows-plugin-lab/
+
+The article is intentionally conservative: the lab has real read-only worker evidence and
+strong traceability evidence, but it is not presented as production-ready automation.
 
 ## What this plugin is not
 
