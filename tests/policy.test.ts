@@ -5,6 +5,7 @@ import { normalizePolicy, stablePolicyHash } from "../src/policy.js";
 test("normalizePolicy rejects unsupported permissions", () => {
   assert.throws(() => normalizePolicy({ allowNetwork: true as false }), /network/);
   assert.throws(() => normalizePolicy({ allowDangerFullAccess: true as false }), /danger/);
+  assert.throws(() => normalizePolicy({ secrets: "everything" as "none" }), /policy\.secrets/);
 });
 
 test("stablePolicyHash is canonical", () => {

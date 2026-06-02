@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { resolve, join } from "node:path";
+import { chmod, copyFile, lstat, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { homedir, tmpdir } from "node:os";
+import { resolve, join, sep } from "node:path";
 import type { ArtifactStore } from "./artifacts.js";
 import { parseNoisyJsonl } from "./jsonl.js";
 import { redactText, redactValue } from "./redaction.js";
@@ -59,6 +59,7 @@ export class CodexExecRunner {
       "never",
       "exec",
       "--json",
+      "--ignore-user-config",
       "--sandbox",
       sandbox,
       "--cd",
@@ -77,16 +78,21 @@ export class CodexExecRunner {
       sandbox,
     });
 
-    const childEnv = await this.workerEnv(agentId);
+    const worker = await this.workerEnv(agentId);
     const timeoutMs = input.options.timeoutMs ?? this.policy.maxWorkerDurationMs;
-    const result = await runProcess({
-      command: this.codexBin,
-      args,
-      stdin: input.prompt,
-      cwd: this.cwd,
-      env: childEnv,
-      timeoutMs,
-    });
+    let result: ProcessResult;
+    try {
+      result = await runProcess({
+        command: this.codexBin,
+        args,
+        stdin: input.prompt,
+        cwd: this.cwd,
+        env: worker.env,
+        timeoutMs,
+      });
+    } finally {
+      await cleanupWorkerTempDirs(worker.tempDirs);
+    }
 
     const redactedStdout = redactText(result.stdout);
     const redactedStderr = redactText(result.stderr);
@@ -137,17 +143,29 @@ export class CodexExecRunner {
     });
   }
 
-  private async workerEnv(agentId: string): Promise<NodeJS.ProcessEnv> {
+  private async workerEnv(agentId: string): Promise<WorkerEnvironment> {
     const home = await mkdtemp(join(tmpdir(), `codex-flow-home-${agentId}-`));
     const codexHome = await mkdtemp(join(tmpdir(), `codex-flow-codex-home-${agentId}-`));
-    await mkdir(home, { recursive: true });
-    return {
-      PATH: this.baseEnv.PATH,
-      HOME: home,
-      TMPDIR: tmpdir(),
-      CODEX_HOME: this.policy.secrets === "codex-auth-only" && this.baseEnv.CODEX_HOME ? this.baseEnv.CODEX_HOME : codexHome,
-      CODEX_FLOW_WORKER: "1",
-    };
+    const tempDirs = [home, codexHome];
+    try {
+      await mkdir(home, { recursive: true });
+      if (this.policy.secrets === "codex-auth-only") {
+        await copyCodexAuthOnly(this.baseEnv, codexHome);
+      }
+      return {
+        env: {
+          PATH: this.baseEnv.PATH,
+          HOME: home,
+          TMPDIR: tmpdir(),
+          CODEX_HOME: codexHome,
+          CODEX_FLOW_WORKER: "1",
+        },
+        tempDirs,
+      };
+    } catch (error) {
+      await cleanupWorkerTempDirs(tempDirs);
+      throw error;
+    }
   }
 
   private output(
@@ -161,6 +179,40 @@ export class CodexExecRunner {
   ): AgentRunOutput {
     return { agentId, label, status, result, durationMs: Date.now() - started, warnings, artifacts };
   }
+}
+
+interface WorkerEnvironment {
+  env: NodeJS.ProcessEnv;
+  tempDirs: string[];
+}
+
+async function copyCodexAuthOnly(env: NodeJS.ProcessEnv, workerCodexHome: string): Promise<void> {
+  const sourceCodexHome = env.CODEX_HOME ? resolve(env.CODEX_HOME) : join(env.HOME ?? homedir(), ".codex");
+  const sourceAuth = join(sourceCodexHome, "auth.json");
+  const targetAuth = join(workerCodexHome, "auth.json");
+  try {
+    const sourceCodexHomeReal = await realpath(sourceCodexHome);
+    const sourceAuthStat = await lstat(sourceAuth);
+    if (sourceAuthStat.isSymbolicLink()) throw new Error("auth.json must not be a symlink");
+    if (!sourceAuthStat.isFile()) throw new Error("auth.json must be a regular file");
+    const sourceAuthReal = await realpath(sourceAuth);
+    if (!isInsidePath(sourceAuthReal, sourceCodexHomeReal)) {
+      throw new Error("auth.json must resolve inside CODEX_HOME");
+    }
+    await copyFile(sourceAuth, targetAuth);
+    await chmod(targetAuth, 0o600);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`codex-auth-only requires file-based Codex auth at ${sourceAuth}: ${message}`);
+  }
+}
+
+async function cleanupWorkerTempDirs(tempDirs: string[]): Promise<void> {
+  await Promise.all(tempDirs.map((dir) => rm(dir, { recursive: true, force: true, maxRetries: 2 })));
+}
+
+function isInsidePath(child: string, parent: string): boolean {
+  return child === parent || child.startsWith(`${parent}${sep}`);
 }
 
 function truncateUtf8(value: string, maxBytes: number): string {

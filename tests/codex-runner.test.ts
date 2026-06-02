@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { readFile, mkdtemp } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdir, readFile, readdir, symlink, writeFile, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
@@ -29,7 +30,162 @@ test("CodexExecRunner uses fake codex and parses noisy JSONL", async () => {
   const command = JSON.parse(await readFile(join(dir, "artifacts", "runs", "run", "agents", "codex-001", "command.json"), "utf8"));
   assert.deepEqual(command.args.slice(0, 3), ["--ask-for-approval", "never", "exec"]);
   assert.equal(command.args.includes("--ask-for-approval") && command.args.indexOf("--ask-for-approval") > command.args.indexOf("exec"), false);
+  assert.ok(command.args.includes("--ignore-user-config"));
   assert.equal(command.args[command.args.indexOf("--sandbox") + 1], "read-only");
+});
+
+test("CodexExecRunner isolates CODEX_HOME by default", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "codex-flow-runner-"));
+  const parentHome = await mkdtemp(join(tmpdir(), "codex-flow-parent-home-"));
+  const store = new ArtifactStore({ root: join(dir, "artifacts"), runId: "run" });
+  await store.init({ name: "demo", description: "demo" }, defaultPolicy);
+  const runner = new CodexExecRunner({
+    cwd: dir,
+    store,
+    policy: defaultPolicy,
+    codexBin: resolve("scripts/fake-codex.js"),
+    env: { PATH: process.env.PATH, HOME: parentHome },
+  });
+
+  const result = await runner.run({
+    prompt: "FAKE_ENV_PROBE",
+    label: "env",
+    options: {},
+  });
+
+  const env = JSON.parse(String(result.result));
+  assert.equal(env.hasWorkerMarker, true);
+  assert.notEqual(env.home, parentHome);
+  assert.notEqual(env.codexHome, join(parentHome, ".codex"));
+  assert.deepEqual(env.codexHomeEntries, []);
+  assert.equal(env.authSha256, null);
+  await assert.rejects(() => readdir(env.home), /ENOENT/);
+  await assert.rejects(() => readdir(env.codexHome), /ENOENT/);
+});
+
+test("CodexExecRunner copies only auth.json for codex-auth-only", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "codex-flow-runner-"));
+  const parentHome = await mkdtemp(join(tmpdir(), "codex-flow-parent-home-"));
+  const parentCodexHome = join(parentHome, ".codex");
+  const authJson = JSON.stringify({ token: "test-auth" });
+  await mkdir(join(parentCodexHome, "plugins"), { recursive: true });
+  await writeFile(join(parentCodexHome, "auth.json"), authJson, "utf8");
+  await writeFile(join(parentCodexHome, "config.toml"), "model = \"test\"\n", "utf8");
+  await writeFile(join(parentCodexHome, "plugins", "plugin.txt"), "plugin", "utf8");
+
+  const policy = { ...defaultPolicy, secrets: "codex-auth-only" as const };
+  const store = new ArtifactStore({ root: join(dir, "artifacts"), runId: "run" });
+  await store.init({ name: "demo", description: "demo" }, policy);
+  const runner = new CodexExecRunner({
+    cwd: dir,
+    store,
+    policy,
+    codexBin: resolve("scripts/fake-codex.js"),
+    env: { PATH: process.env.PATH, HOME: parentHome },
+  });
+
+  const result = await runner.run({
+    prompt: "FAKE_ENV_PROBE",
+    label: "env",
+    options: {},
+  });
+
+  const env = JSON.parse(String(result.result));
+  assert.notEqual(env.codexHome, parentCodexHome);
+  assert.deepEqual(env.codexHomeEntries, ["auth.json"]);
+  assert.equal(env.authSha256, sha256(authJson));
+  assert.equal(env.authMode, 0o600);
+  await assert.rejects(() => readdir(env.home), /ENOENT/);
+  await assert.rejects(() => readdir(env.codexHome), /ENOENT/);
+});
+
+test("CodexExecRunner reads auth from explicit CODEX_HOME for codex-auth-only", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "codex-flow-runner-"));
+  const parentHome = await mkdtemp(join(tmpdir(), "codex-flow-parent-home-"));
+  const explicitCodexHome = await mkdtemp(join(tmpdir(), "codex-flow-explicit-codex-home-"));
+  const authJson = JSON.stringify({ token: "explicit-auth" });
+  await writeFile(join(explicitCodexHome, "auth.json"), authJson, "utf8");
+
+  const policy = { ...defaultPolicy, secrets: "codex-auth-only" as const };
+  const store = new ArtifactStore({ root: join(dir, "artifacts"), runId: "run" });
+  await store.init({ name: "demo", description: "demo" }, policy);
+  const runner = new CodexExecRunner({
+    cwd: dir,
+    store,
+    policy,
+    codexBin: resolve("scripts/fake-codex.js"),
+    env: { PATH: process.env.PATH, HOME: parentHome, CODEX_HOME: explicitCodexHome },
+  });
+
+  const result = await runner.run({
+    prompt: "FAKE_ENV_PROBE",
+    label: "env",
+    options: {},
+  });
+
+  const env = JSON.parse(String(result.result));
+  assert.notEqual(env.home, parentHome);
+  assert.notEqual(env.codexHome, explicitCodexHome);
+  assert.deepEqual(env.codexHomeEntries, ["auth.json"]);
+  assert.equal(env.authSha256, sha256(authJson));
+  await assert.rejects(() => readdir(env.home), /ENOENT/);
+  await assert.rejects(() => readdir(env.codexHome), /ENOENT/);
+});
+
+test("CodexExecRunner rejects symlinked codex-auth-only auth files", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "codex-flow-runner-"));
+  const parentHome = await mkdtemp(join(tmpdir(), "codex-flow-parent-home-"));
+  const parentCodexHome = join(parentHome, ".codex");
+  const targetDir = await mkdtemp(join(tmpdir(), "codex-flow-auth-target-"));
+  await mkdir(parentCodexHome, { recursive: true });
+  await writeFile(join(targetDir, "auth.json"), JSON.stringify({ token: "symlink-auth" }), "utf8");
+  await symlink(join(targetDir, "auth.json"), join(parentCodexHome, "auth.json"));
+
+  const policy = { ...defaultPolicy, secrets: "codex-auth-only" as const };
+  const store = new ArtifactStore({ root: join(dir, "artifacts"), runId: "run" });
+  await store.init({ name: "demo", description: "demo" }, policy);
+  const runner = new CodexExecRunner({
+    cwd: dir,
+    store,
+    policy,
+    codexBin: resolve("scripts/fake-codex.js"),
+    env: { PATH: process.env.PATH, HOME: parentHome },
+  });
+
+  await assert.rejects(
+    () =>
+      runner.run({
+        prompt: "FAKE_ENV_PROBE",
+        label: "env",
+        options: {},
+      }),
+    /auth\.json must not be a symlink/,
+  );
+});
+
+test("CodexExecRunner fails early when codex-auth-only auth file is missing", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "codex-flow-runner-"));
+  const parentHome = await mkdtemp(join(tmpdir(), "codex-flow-parent-home-"));
+  const policy = { ...defaultPolicy, secrets: "codex-auth-only" as const };
+  const store = new ArtifactStore({ root: join(dir, "artifacts"), runId: "run" });
+  await store.init({ name: "demo", description: "demo" }, policy);
+  const runner = new CodexExecRunner({
+    cwd: dir,
+    store,
+    policy,
+    codexBin: resolve("scripts/fake-codex.js"),
+    env: { PATH: process.env.PATH, HOME: parentHome },
+  });
+
+  await assert.rejects(
+    () =>
+      runner.run({
+        prompt: "FAKE_ENV_PROBE",
+        label: "env",
+        options: {},
+      }),
+    /codex-auth-only requires file-based Codex auth/,
+  );
 });
 
 test("CodexExecRunner keeps truncated logs when stdout exceeds policy", async () => {
@@ -85,3 +241,7 @@ test("CodexExecRunner fails oversized stdout when last-message fallback is absen
   assert.equal(result.status, "failed");
   assert.ok(result.warnings.includes("worker stdout exceeded policy"));
 });
+
+function sha256(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
+}

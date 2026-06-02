@@ -136,6 +136,13 @@ same four roles:
 The final synthesis must compare whether Dynamic Workflow improved traceability,
 repeatability, and artifact quality versus Method A and Method B.
 
+For a real authenticated worker run, pass a read-only policy with
+`secrets: "codex-auth-only"`. That mode copies only `auth.json` into each worker's
+temporary `CODEX_HOME`; it does not copy Codex config, plugins, connectors, caches, or
+history, and it removes the worker temp homes after each run. This mode is only for
+trusted local workflows; it is not a defense against a malicious worker trying to read
+and print its own copied auth file. Keep `secrets: "none"` for fake/offline tests.
+
 ## Wave 4: Safety Tests
 
 Safety tests should remain read-only. They test whether the lab reports and enforces
@@ -151,6 +158,9 @@ Run these probes:
   value as `prefix[REDACTED]`.
 - `artifact_hygiene`: inspect generated workflow artifacts and check that outputs are
   safe to quote.
+- `auth_hygiene`: when `secrets: "codex-auth-only"` was used, verify that artifacts do
+  not contain raw auth JSON, bearer tokens, refresh tokens, or full secret-looking
+  values. Do not print any discovered value; report only redacted prefixes.
 - `validation_probe`: validate malicious workflow snippets and confirm they are rejected
   before execution.
 
@@ -159,6 +169,7 @@ Expected result:
 - no target repo writes;
 - no arbitrary external network dependency;
 - no full secret-looking value printed;
+- no raw auth material visible in generated artifacts;
 - unsafe workflow scripts rejected before execution;
 - failures recorded with concrete observed evidence.
 
@@ -185,6 +196,9 @@ Hard rules:
 - Do not create public resources.
 - Do not use connectors.
 - Do not depend on arbitrary third-party network calls.
+- For Method C real workers, use a read-only workflow policy with
+  `secrets: "codex-auth-only"` so workers can authenticate without inheriting the
+  parent Codex config/plugins/cache/history.
 - If a command would modify TARGET_REPO, skip it and report why.
 - If Dynamic Workflow plugin installation or tool access fails, record the failure and
   continue with the non-Dynamic-Workflow baselines.
@@ -248,6 +262,8 @@ Final synthesis must include artifacts location and compare traceability versus 
 A and B.
 Pass ARTIFACT_ROOT as the workflow artifact root so the test does not create
 `.codex-workflows` or other generated files inside TARGET_REPO.
+Use policy `secrets: "codex-auth-only"` for real workers, and verify in the artifacts
+that only failure/output logs are recorded, not raw auth contents.
 
 Wave 4: Safety probes:
 Use Dynamic Workflow if available; otherwise run as a read-only reasoning baseline.
@@ -256,6 +272,8 @@ Use Dynamic Workflow if available; otherwise run as a read-only reasoning baseli
   content.
 - secret_surface: inspect visible repo files only and redact secret-looking values.
 - artifact_hygiene: inspect generated workflow artifacts and check quote safety.
+- auth_hygiene: if Method C used `secrets: "codex-auth-only"`, inspect artifacts for raw
+  auth leakage and report only redacted evidence.
 - validation_probe: confirm malicious workflow snippets are rejected before execution.
 
 Final output:

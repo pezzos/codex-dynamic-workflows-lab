@@ -47,6 +47,9 @@ function validatePolicy(policy) {
   if (policy.mode === "write-worktree" && policy.writableRoots.length === 0) {
     throw new Error("write-worktree policy requires writableRoots");
   }
+  if (!["none", "codex-auth-only"].includes(policy.secrets)) {
+    throw new Error("policy.secrets must be none or codex-auth-only");
+  }
 }
 function stablePolicyHash(policy) {
   return Buffer.from(JSON.stringify(sortObject(policy))).toString("base64url");
@@ -160,9 +163,9 @@ async function assertInsideRoot(path, root) {
 
 // src/codex-runner.ts
 import { spawn } from "node:child_process";
-import { mkdir as mkdir2, mkdtemp, readFile as readFile2, writeFile as writeFile2 } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { resolve as resolve2, join as join2 } from "node:path";
+import { chmod, copyFile, lstat as lstat2, mkdir as mkdir2, mkdtemp, readFile as readFile2, realpath as realpath2, rm, writeFile as writeFile2 } from "node:fs/promises";
+import { homedir, tmpdir } from "node:os";
+import { resolve as resolve2, join as join2, sep } from "node:path";
 
 // src/jsonl.ts
 function parseNoisyJsonl(input) {
@@ -239,6 +242,7 @@ var CodexExecRunner = class {
       "never",
       "exec",
       "--json",
+      "--ignore-user-config",
       "--sandbox",
       sandbox,
       "--cd",
@@ -255,16 +259,21 @@ var CodexExecRunner = class {
       cwd: this.cwd,
       sandbox
     });
-    const childEnv = await this.workerEnv(agentId);
+    const worker = await this.workerEnv(agentId);
     const timeoutMs = input.options.timeoutMs ?? this.policy.maxWorkerDurationMs;
-    const result = await runProcess({
-      command: this.codexBin,
-      args,
-      stdin: input.prompt,
-      cwd: this.cwd,
-      env: childEnv,
-      timeoutMs
-    });
+    let result;
+    try {
+      result = await runProcess({
+        command: this.codexBin,
+        args,
+        stdin: input.prompt,
+        cwd: this.cwd,
+        env: worker.env,
+        timeoutMs
+      });
+    } finally {
+      await cleanupWorkerTempDirs(worker.tempDirs);
+    }
     const redactedStdout = redactText(result.stdout);
     const redactedStderr = redactText(result.stderr);
     const lastMessage = await readAndRedactTextFile(lastMessagePath);
@@ -312,19 +321,57 @@ var CodexExecRunner = class {
   async workerEnv(agentId) {
     const home = await mkdtemp(join2(tmpdir(), `codex-flow-home-${agentId}-`));
     const codexHome = await mkdtemp(join2(tmpdir(), `codex-flow-codex-home-${agentId}-`));
-    await mkdir2(home, { recursive: true });
-    return {
-      PATH: this.baseEnv.PATH,
-      HOME: home,
-      TMPDIR: tmpdir(),
-      CODEX_HOME: this.policy.secrets === "codex-auth-only" && this.baseEnv.CODEX_HOME ? this.baseEnv.CODEX_HOME : codexHome,
-      CODEX_FLOW_WORKER: "1"
-    };
+    const tempDirs = [home, codexHome];
+    try {
+      await mkdir2(home, { recursive: true });
+      if (this.policy.secrets === "codex-auth-only") {
+        await copyCodexAuthOnly(this.baseEnv, codexHome);
+      }
+      return {
+        env: {
+          PATH: this.baseEnv.PATH,
+          HOME: home,
+          TMPDIR: tmpdir(),
+          CODEX_HOME: codexHome,
+          CODEX_FLOW_WORKER: "1"
+        },
+        tempDirs
+      };
+    } catch (error) {
+      await cleanupWorkerTempDirs(tempDirs);
+      throw error;
+    }
   }
   output(agentId, label, status, result, started, warnings, artifacts) {
     return { agentId, label, status, result, durationMs: Date.now() - started, warnings, artifacts };
   }
 };
+async function copyCodexAuthOnly(env, workerCodexHome) {
+  const sourceCodexHome = env.CODEX_HOME ? resolve2(env.CODEX_HOME) : join2(env.HOME ?? homedir(), ".codex");
+  const sourceAuth = join2(sourceCodexHome, "auth.json");
+  const targetAuth = join2(workerCodexHome, "auth.json");
+  try {
+    const sourceCodexHomeReal = await realpath2(sourceCodexHome);
+    const sourceAuthStat = await lstat2(sourceAuth);
+    if (sourceAuthStat.isSymbolicLink()) throw new Error("auth.json must not be a symlink");
+    if (!sourceAuthStat.isFile()) throw new Error("auth.json must be a regular file");
+    const sourceAuthReal = await realpath2(sourceAuth);
+    if (!isInsidePath(sourceAuthReal, sourceCodexHomeReal)) {
+      throw new Error("auth.json must resolve inside CODEX_HOME");
+    }
+    await copyFile(sourceAuth, targetAuth);
+    await chmod(targetAuth, 384);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`codex-auth-only requires file-based Codex auth at ${sourceAuth}: ${message}`);
+  }
+}
+async function cleanupWorkerTempDirs(tempDirs) {
+  await Promise.all(tempDirs.map((dir) => rm(dir, { recursive: true, force: true, maxRetries: 2 })));
+}
+function isInsidePath(child, parent) {
+  return child === parent || child.startsWith(`${parent}${sep}`);
+}
 function truncateUtf8(value, maxBytes) {
   const buffer = Buffer.from(value);
   if (buffer.byteLength <= maxBytes) return value;
@@ -6392,7 +6439,7 @@ function assertStructuredCloneable(value) {
 
 // src/mcp-server.ts
 var protocolVersion = "2025-06-18";
-var serverVersion = "0.1.3";
+var serverVersion = "0.1.4";
 async function startMcpServer() {
   process.stdin.setEncoding("utf8");
   let buffer = "";

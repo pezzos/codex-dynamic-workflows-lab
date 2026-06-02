@@ -118,8 +118,21 @@ The runtime enforces an immutable policy outside the worker. The MVP defaults to
 - no `danger-full-access`;
 - scrubbed worker environment;
 - temporary `HOME`;
-- isolated `CODEX_HOME` unless explicitly configured otherwise;
+- isolated `CODEX_HOME`;
+- optional `secrets: "codex-auth-only"` mode that copies only `auth.json` from the
+  parent Codex home into the temporary worker `CODEX_HOME`;
 - bounded max agents, concurrency, duration, and output size.
+
+`codex-auth-only` resolves the parent Codex home from `CODEX_HOME` when set, otherwise
+from `$HOME/.codex`. It rejects symlinked or non-regular `auth.json` files, copies only
+that file into the worker's temporary `CODEX_HOME`, sets the copied file to `0600`, and
+removes the worker temp homes after the run. It does not copy parent Codex config,
+plugins, connectors, caches, or history.
+
+This is config-minimal, not secret-safe. A malicious workflow or prompt-injected worker
+that can read its own `CODEX_HOME` could still try to print credentials into artifacts.
+Use `codex-auth-only` only for trusted local workflows and treat the copied `auth.json`
+as a password-equivalent secret.
 
 This is still a lab. Do not use it for autonomous write-heavy workflows or public
 resource actions.
@@ -128,19 +141,17 @@ resource actions.
 
 These branches are not validated yet:
 
-- real authenticated `codex exec` workers;
+- a successful comparative multi-worker campaign after the 0.1.4 auth fix;
 - write mode in isolated worktrees;
 - full `workflow_submit` calls from an actual Codex MCP client;
 - process-tree termination for worker children and grandchildren;
-- a minimal `codex-auth-only` strategy that exposes authentication without leaking
-  unrelated Codex config, plugins, connectors, caches, or history.
 
 ## Related article
 
 This repository is the evidence artifact for a Project Pezzos draft article about
 adapting Claude Code-style Dynamic Workflows to Codex surfaces. The article remains a
-draft until the real Codex worker, write-mode, full MCP path, process-tree kill, and
-`codex-auth-only` paths are validated.
+draft until comparative real-worker runs, write-mode, full MCP client path,
+process-tree kill, and authenticated campaign paths are validated.
 
 ## What this plugin is not
 

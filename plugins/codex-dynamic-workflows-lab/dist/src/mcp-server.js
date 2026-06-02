@@ -6,7 +6,7 @@ import { CodexExecRunner } from "./codex-runner.js";
 import { normalizePolicy } from "./policy.js";
 import { parseWorkflowScript, runWorkflow } from "./workflow.js";
 const protocolVersion = "2025-06-18";
-const serverVersion = "0.1.3";
+const serverVersion = "0.1.4";
 export async function startMcpServer() {
     process.stdin.setEncoding("utf8");
     let buffer = "";

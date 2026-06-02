@@ -213,3 +213,41 @@ Workflows replacement.
 - `validation`: added MCP artifact contract tests, runner redaction and
   last-message-fallback tests, and workflow summary redaction tests.
 - `version`: bumped plugin package and manifest to `0.1.3`.
+
+## Fix 2026-06-02 - Worker auth propagation
+
+- `status`: done
+- `input_report`: campaign `dwave-2026-06-02-bg` on `BannerGenerator`.
+- `normal_findings`: Wave 2 validation, fake runs, plugin validation, static unsafe
+  rejection, and artifact placement now pass. Method C still failed before repository
+  analysis because real `codex exec` workers returned `401 Unauthorized: Missing bearer
+  or basic authentication`.
+- `root_cause`: worker execution intentionally used a temporary `HOME` and temporary
+  `CODEX_HOME`, but the auth propagation path only worked when the parent process had
+  an explicit `CODEX_HOME`. In the local Codex desktop case, `CODEX_HOME` is unset and
+  file-based auth lives under `$HOME/.codex/auth.json`, so workers started with an empty
+  Codex home. External auth wrappers could not fix this once the runner set its own
+  isolated `CODEX_HOME`.
+- `fixes`: when policy `secrets` is `codex-auth-only`, resolve the parent Codex home
+  from `CODEX_HOME` or `$HOME/.codex`, reject symlinked or non-regular `auth.json`
+  files, copy only `auth.json` into the worker's temporary `CODEX_HOME`, set copied auth
+  permissions to `0600`, keep worker `HOME` temporary, clean up worker temp homes after
+  execution, and pass `--ignore-user-config` so parent Codex
+  config/plugins/connectors/caches are not inherited. Unknown `policy.secrets` values
+  are rejected during normalization.
+- `tests`: added offline runner tests for default isolated `CODEX_HOME`, `$HOME/.codex`
+  auth fallback, explicit `CODEX_HOME` auth source, symlinked-auth rejection,
+  copied-file permissions, temp-home cleanup, missing-auth failure, and MCP
+  `workflow_submit` propagation of `codex-auth-only`.
+- `live_smoke`: a one-worker real `codex exec` smoke using policy
+  `secrets: "codex-auth-only"` completed in 5190 ms with result `AUTH_SMOKE_OK`.
+  Artifact scan found only the expected prompt/result text and command flags, with no
+  `auth.json`, bearer/basic auth marker, token pattern, or `401` evidence.
+- `security_note`: `codex-auth-only` is config-minimal, not secret-safe. It remains for
+  trusted local workflows only because a malicious worker could still attempt to read
+  its temporary copied auth file and print it into artifacts.
+- `article_claim`: keep the article claim conservative until a fresh campaign proves a
+  successful authenticated Method C run. The current supported claim is that
+  `codex-auth-only` is implemented, unit-tested, and live-smoke-tested, while live
+  multi-agent performance still needs to be rerun.
+- `version`: bumped plugin package, manifests, and MCP server version to `0.1.4`.

@@ -40,6 +40,9 @@ export function validatePolicy(policy: WorkflowPolicy): void {
   if (policy.mode === "write-worktree" && policy.writableRoots.length === 0) {
     throw new Error("write-worktree policy requires writableRoots");
   }
+  if (!["none", "codex-auth-only"].includes(policy.secrets)) {
+    throw new Error("policy.secrets must be none or codex-auth-only");
+  }
 }
 
 export function stablePolicyHash(policy: WorkflowPolicy): string {

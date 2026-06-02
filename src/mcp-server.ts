@@ -9,7 +9,7 @@ import { parseWorkflowScript, runWorkflow } from "./workflow.js";
 type JsonRpc = { jsonrpc?: "2.0"; id?: string | number; method?: string; params?: any };
 
 const protocolVersion = "2025-06-18";
-const serverVersion = "0.1.3";
+const serverVersion = "0.1.4";
 
 export async function startMcpServer(): Promise<void> {
   process.stdin.setEncoding("utf8");
