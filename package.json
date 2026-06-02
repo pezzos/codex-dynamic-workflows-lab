@@ -1,7 +1,7 @@
 {
   "name": "codex-dynamic-workflows-lab",
   "version": "0.1.0",
-  "description": "Local lab for Codex-compatible dynamic workflow orchestration.",
+  "description": "Experimental Codex plugin for bounded local dynamic workflow orchestration.",
   "type": "module",
   "bin": {
     "codex-flow": "./dist/src/cli.js",
@@ -15,6 +15,7 @@
     "test": "npm run build && node --test dist/tests/*.test.js",
     "test:offline": "npm test",
     "lint": "npm run build && node --check dist/src/cli.js && node --check dist/src/mcp-server.js",
+    "plugin:validate": "node scripts/validate-plugin.js",
     "check": "npm run lint && npm run test",
     "pack:dry": "npm pack --dry-run"
   },
@@ -23,6 +24,8 @@
     "skills/",
     "examples/",
     ".codex-plugin/",
+    ".agents/plugins/marketplace.json",
+    ".mcp.json",
     "README.md",
     "RESULTATS.md"
   ],
@@ -33,5 +36,18 @@
     "@types/node": "^24.10.1",
     "typescript": "^5.9.3"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "author": "Pezzos",
+  "homepage": "https://github.com/pezzos/codex-dynamic-workflows-lab",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pezzos/codex-dynamic-workflows-lab.git"
+  },
+  "keywords": [
+    "codex",
+    "workflow",
+    "orchestration",
+    "mcp",
+    "multi-agent"
+  ]
 }

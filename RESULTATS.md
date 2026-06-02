@@ -92,3 +92,19 @@
 `needs-more-test`: enough evidence exists for a draft article about the local MVP and
 its limits, but not for a strong claim that this is a production-ready Codex Dynamic
 Workflows replacement.
+
+## Fix 2026-06-02 - Git marketplace manifest
+
+- `status`: in-progress
+- `issue`: `codex plugin marketplace add pezzos/codex-dynamic-workflows-lab` failed
+  because the public repository was a plugin folder, but did not yet contain a supported
+  marketplace manifest.
+- `root_cause`: Codex expects a marketplace catalog such as
+  `.agents/plugins/marketplace.json` at the marketplace root. The previous public repo
+  had `.codex-plugin/plugin.json`, but no marketplace catalog to discover it.
+- `fix`: add `.agents/plugins/marketplace.json` pointing to `source.path: "./"`, enrich
+  `.codex-plugin/plugin.json` with plugin-browser metadata and `.mcp.json`, add
+  `.mcp.json` for the stdio MCP server, and add `npm run plugin:validate`.
+- `validation_planned`: validate the local marketplace with temporary `CODEX_HOME`, push
+  the fix, then validate `codex plugin marketplace add pezzos/codex-dynamic-workflows-lab
+  --ref main` with temporary `CODEX_HOME`.

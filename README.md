@@ -1,6 +1,6 @@
-# codex-dynamic-workflows-lab
+# Codex Dynamic Workflows Lab
 
-Local lab prototype for Codex-compatible dynamic workflows.
+Experimental Codex plugin for bounded local dynamic workflows.
 
 The prototype turns a deterministic JavaScript workflow into bounded `codex exec`
 workers, then records local artifacts for review. It is inspired by Claude Code Dynamic
@@ -9,7 +9,7 @@ internals.
 
 ## Status
 
-- Prototype: public lab MVP
+- Plugin: local marketplace-ready experimental MVP
 - Public-safety status: published as an experimental reader-facing lab artifact
 - Writes: read-only by default; write mode is not validated for production use
 - Network/connectors: disabled in policy
@@ -19,6 +19,50 @@ internals.
 ```bash
 npm install
 npm run build
+npm run plugin:validate
+```
+
+## Install from a local Codex marketplace
+
+This repository includes a repo-local marketplace catalog at
+`.agents/plugins/marketplace.json`. From the parent directory, add this folder as a
+local marketplace:
+
+```bash
+codex plugin marketplace add ./codex-dynamic-workflows-lab
+```
+
+Then restart Codex, open the plugin directory, select the
+`codex-dynamic-workflows-lab` marketplace, and install **Codex Dynamic Workflows Lab**.
+
+The marketplace entry points at the plugin root with `source.path: "./"`. The plugin
+manifest lives at `.codex-plugin/plugin.json` and declares:
+
+- the `dynamic-workflow` skill under `skills/`;
+- the local stdio MCP server in `.mcp.json`;
+- marketplace interface metadata for Codex plugin browsers.
+
+## Publish through a Git-backed marketplace
+
+Push this folder to the public repository, then add it as a marketplace source:
+
+```bash
+codex plugin marketplace add pezzos/codex-dynamic-workflows-lab --ref main
+```
+
+If the marketplace lives in a larger repository, use a sparse path that contains this
+folder:
+
+```bash
+codex plugin marketplace add owner/plugins-repo --ref main --sparse path/to/marketplace-root
+```
+
+Run the validation suite before publishing updates:
+
+```bash
+npm run check
+npm run plugin:validate
+npm run pack:dry
 ```
 
 ## Run offline with fake Codex
@@ -38,6 +82,9 @@ The package exposes a stdio MCP server:
 ```bash
 node dist/src/cli.js server
 ```
+
+The plugin manifest also exposes this server through `.mcp.json` as
+`codex-dynamic-workflows`.
 
 Current tools:
 
@@ -82,9 +129,9 @@ adapting Claude Code-style Dynamic Workflows to Codex surfaces. The article rema
 draft until the real Codex worker, write-mode, full MCP path, process-tree kill, and
 `codex-auth-only` paths are validated.
 
-## What this repo is not
+## What this plugin is not
 
-- Not a production Codex plugin.
+- Not a production-ready autonomous workflow system.
 - Not an official OpenAI tool.
 - Not a safe replacement for human review.
 - Not a reason to expose local Codex resources publicly.
