@@ -136,3 +136,9 @@ Workflows replacement.
   `codex plugin add codex-dynamic-workflows-lab --marketplace
   codex-dynamic-workflows-lab`. `npm run check`, `npm run plugin:validate`, and
   `npm run pack:dry` also passed with the nested marketplace plugin included.
+- `github_validation`: after pushing commit `89b4e77`, temporary `CODEX_HOME`
+  validation passed `codex plugin marketplace add
+  pezzos/codex-dynamic-workflows-lab --ref main`, `codex plugin list`,
+  `codex plugin add codex-dynamic-workflows-lab --marketplace
+  codex-dynamic-workflows-lab`, and a JSON-RPC `initialize` plus `tools/list` smoke
+  from the installed plugin cache.
