@@ -40,12 +40,12 @@ export class CodexExecRunner {
             }
         }
         const args = [
+            "--ask-for-approval",
+            "never",
             "exec",
             "--json",
             "--sandbox",
             sandbox,
-            "--ask-for-approval",
-            "never",
             "--cd",
             this.cwd,
             "-o",
@@ -72,32 +72,35 @@ export class CodexExecRunner {
             env: childEnv,
             timeoutMs,
         });
+        const stdoutPath = join(agentDir, "stdout.log");
+        const stderrPath = join(agentDir, "stderr.log");
+        await this.store.writeAgentText(agentId, "stderr.log", result.stderr);
         if (Buffer.byteLength(result.stdout) > this.policy.maxOutputBytesPerWorker) {
+            await this.store.writeAgentText(agentId, "stdout.log", truncateUtf8(result.stdout, this.policy.maxOutputBytesPerWorker));
             return this.output(agentId, input.label, "failed", null, started, ["worker stdout exceeded policy"], {
-                stdout: join(agentDir, "stdout.log"),
-                stderr: join(agentDir, "stderr.log"),
+                stdout: stdoutPath,
+                stderr: stderrPath,
             });
         }
         await this.store.writeAgentText(agentId, "stdout.log", result.stdout);
-        await this.store.writeAgentText(agentId, "stderr.log", result.stderr);
         const parsed = parseNoisyJsonl(result.stdout);
         await this.store.writeAgentJson(agentId, "events.json", parsed.events);
         if (result.timedOut) {
             return this.output(agentId, input.label, "timed_out", null, started, parsed.warnings, {
-                stdout: join(agentDir, "stdout.log"),
-                stderr: join(agentDir, "stderr.log"),
+                stdout: stdoutPath,
+                stderr: stderrPath,
             });
         }
         if (result.exitCode !== 0) {
             return this.output(agentId, input.label, "failed", null, started, parsed.warnings.concat(`exit ${result.exitCode}`), {
-                stdout: join(agentDir, "stdout.log"),
-                stderr: join(agentDir, "stderr.log"),
+                stdout: stdoutPath,
+                stderr: stderrPath,
             });
         }
         const finalResult = extractFinalResult(parsed.events);
         return this.output(agentId, input.label, "completed", finalResult, started, parsed.warnings, {
-            stdout: join(agentDir, "stdout.log"),
-            stderr: join(agentDir, "stderr.log"),
+            stdout: stdoutPath,
+            stderr: stderrPath,
             lastMessage: lastMessagePath,
         });
     }
@@ -116,6 +119,13 @@ export class CodexExecRunner {
     output(agentId, label, status, result, started, warnings, artifacts) {
         return { agentId, label, status, result, durationMs: Date.now() - started, warnings, artifacts };
     }
+}
+function truncateUtf8(value, maxBytes) {
+    const buffer = Buffer.from(value);
+    if (buffer.byteLength <= maxBytes)
+        return value;
+    const marker = "\n[truncated: worker stdout exceeded policy]\n";
+    return `${buffer.subarray(0, Math.max(0, maxBytes)).toString("utf8")}${marker}`;
 }
 async function runProcess(options) {
     return new Promise((resolve) => {

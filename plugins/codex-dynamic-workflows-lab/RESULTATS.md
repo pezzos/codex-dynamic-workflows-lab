@@ -170,3 +170,24 @@ Workflows replacement.
   master prompt for a fresh Codex session.
 - `packaging`: include `docs/` in `package.json` and in the marketplace plugin sync so
   the protocol is present in the repo and installable plugin copy.
+
+## Fix 2026-06-02 - Campaign feedback hardening
+
+- `status`: done
+- `input_reports`: campaign `#1` on `BannerGenerator` and `AuditTool`.
+- `normal_findings`: Dynamic Workflow already produced useful forensic artifacts even
+  when worker execution failed. Manual multi-agent review still produced stronger repo
+  findings in these two campaigns, so the current article claim should stay focused on
+  traceability and repeatability, not analysis superiority.
+- `root_causes`: current Codex CLI accepts `--ask-for-approval never` only before the
+  `exec` subcommand; static workflow validation did not reject `process.env` or literal
+  worker write requests; stdout-over-policy failures returned stdout/stderr artifact
+  paths before writing those files.
+- `fixes`: move the approval flag before `exec`, reject `process.env` and
+  `process["env"]` while still allowing `process.cwd()`, reject literal
+  `agent(..., { sandbox: "workspace-write" })` and `writeScope: "worktree"` at
+  validation time, and always write stderr plus truncated stdout when stdout exceeds
+  the worker output policy.
+- `protocol_update`: fresh-session campaigns now define `ARTIFACT_ROOT` outside the
+  target repository and require Dynamic Workflow artifacts to be written there.
+- `version`: bumped plugin package and manifest to `0.1.2`.

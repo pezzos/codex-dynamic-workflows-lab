@@ -40,6 +40,8 @@ test("parseWorkflowScript rejects nondeterministic and escape APIs", () => {
     "import('node:fs')",
     "globalThis",
     "Buffer",
+    "process.env",
+    'process["env"]',
     "({}).constructor",
   ]) {
     assert.throws(
@@ -48,6 +50,39 @@ test("parseWorkflowScript rejects nondeterministic and escape APIs", () => {
       expression,
     );
   }
+});
+
+test("parseWorkflowScript allows process.cwd helper", () => {
+  const parsed = parseWorkflowScript(`
+export const meta = { name: "cwd_demo", description: "Demo workflow" }
+return process.cwd()
+`);
+  assert.match(parsed.body, /process\.cwd/);
+});
+
+test("parseWorkflowScript rejects worker write requests during validation", () => {
+  for (const options of [
+    '{ label: "write", sandbox: "workspace-write" }',
+    '{ label: "write", writeScope: "worktree" }',
+  ]) {
+    assert.throws(
+      () =>
+        parseWorkflowScript(`
+export const meta = { name: "bad_write", description: "bad" }
+return agent("write", ${options})
+`),
+      /forbids worker write requests/,
+      options,
+    );
+  }
+});
+
+test("parseWorkflowScript accepts explicit read-only worker requests", () => {
+  const parsed = parseWorkflowScript(`
+export const meta = { name: "read_worker", description: "Demo workflow" }
+return agent("read", { label: "read", sandbox: "read-only" })
+`);
+  assert.match(parsed.body, /sandbox/);
 });
 
 test("runWorkflow executes phases and parallel agents", async () => {
@@ -91,6 +126,6 @@ return { value }
           policy: { mode: "read-only" },
         },
       ),
-    /requested writes/,
+    /forbids worker write requests/,
   );
 });

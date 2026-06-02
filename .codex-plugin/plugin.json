@@ -1,6 +1,6 @@
 {
   "name": "codex-dynamic-workflows-lab",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Coordinate bounded local Codex workflows from a skill and MCP server.",
   "author": {
     "name": "Pezzos"

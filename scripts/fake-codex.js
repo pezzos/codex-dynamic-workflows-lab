@@ -14,6 +14,11 @@ process.stdin.on("end", () => {
     process.stderr.write("fake failure\n");
     process.exit(2);
   }
+  if (stdin.includes("FAKE_LARGE_STDOUT")) {
+    process.stderr.write("fake large stdout\n");
+    console.log("x".repeat(4096));
+    return;
+  }
   console.log(JSON.stringify({ type: "thread.started", thread_id: "fake-thread" }));
   console.log("not json but tolerated");
   console.log(

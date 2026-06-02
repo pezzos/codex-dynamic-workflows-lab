@@ -219,12 +219,12 @@ var CodexExecRunner = class {
       }
     }
     const args = [
+      "--ask-for-approval",
+      "never",
       "exec",
       "--json",
       "--sandbox",
       sandbox,
-      "--ask-for-approval",
-      "never",
       "--cd",
       this.cwd,
       "-o",
@@ -249,32 +249,35 @@ var CodexExecRunner = class {
       env: childEnv,
       timeoutMs
     });
+    const stdoutPath = join2(agentDir, "stdout.log");
+    const stderrPath = join2(agentDir, "stderr.log");
+    await this.store.writeAgentText(agentId, "stderr.log", result.stderr);
     if (Buffer.byteLength(result.stdout) > this.policy.maxOutputBytesPerWorker) {
+      await this.store.writeAgentText(agentId, "stdout.log", truncateUtf8(result.stdout, this.policy.maxOutputBytesPerWorker));
       return this.output(agentId, input.label, "failed", null, started, ["worker stdout exceeded policy"], {
-        stdout: join2(agentDir, "stdout.log"),
-        stderr: join2(agentDir, "stderr.log")
+        stdout: stdoutPath,
+        stderr: stderrPath
       });
     }
     await this.store.writeAgentText(agentId, "stdout.log", result.stdout);
-    await this.store.writeAgentText(agentId, "stderr.log", result.stderr);
     const parsed = parseNoisyJsonl(result.stdout);
     await this.store.writeAgentJson(agentId, "events.json", parsed.events);
     if (result.timedOut) {
       return this.output(agentId, input.label, "timed_out", null, started, parsed.warnings, {
-        stdout: join2(agentDir, "stdout.log"),
-        stderr: join2(agentDir, "stderr.log")
+        stdout: stdoutPath,
+        stderr: stderrPath
       });
     }
     if (result.exitCode !== 0) {
       return this.output(agentId, input.label, "failed", null, started, parsed.warnings.concat(`exit ${result.exitCode}`), {
-        stdout: join2(agentDir, "stdout.log"),
-        stderr: join2(agentDir, "stderr.log")
+        stdout: stdoutPath,
+        stderr: stderrPath
       });
     }
     const finalResult = extractFinalResult(parsed.events);
     return this.output(agentId, input.label, "completed", finalResult, started, parsed.warnings, {
-      stdout: join2(agentDir, "stdout.log"),
-      stderr: join2(agentDir, "stderr.log"),
+      stdout: stdoutPath,
+      stderr: stderrPath,
       lastMessage: lastMessagePath
     });
   }
@@ -294,6 +297,12 @@ var CodexExecRunner = class {
     return { agentId, label, status, result, durationMs: Date.now() - started, warnings, artifacts };
   }
 };
+function truncateUtf8(value, maxBytes) {
+  const buffer = Buffer.from(value);
+  if (buffer.byteLength <= maxBytes) return value;
+  const marker = "\n[truncated: worker stdout exceeded policy]\n";
+  return `${buffer.subarray(0, Math.max(0, maxBytes)).toString("utf8")}${marker}`;
+}
 async function runProcess(options) {
   return new Promise((resolve4) => {
     const child = spawn(options.command, options.args, {
@@ -6241,6 +6250,8 @@ function assertDeterministicAst(node) {
 }
 function assertForbiddenAst(node) {
   if (node.type === "ImportExpression") throw new Error("dynamic import is forbidden");
+  if (isForbiddenProcessAccess(node)) throw new Error("process access is forbidden except process.cwd()");
+  if (isAgentWriteRequest(node)) throw new Error("workflow validation forbids worker write requests in MVP");
   if (node.type === "CallExpression" && node.callee?.type === "Identifier" && ["eval", "require", "Function"].includes(node.callee.name)) {
     throw new Error(`${node.callee.name} is forbidden`);
   }
@@ -6273,6 +6284,23 @@ function isMathRandomCall(node) {
 }
 function isNewDateExpression(node) {
   return node.type === "NewExpression" && node.callee?.type === "Identifier" && node.callee.name === "Date";
+}
+function isForbiddenProcessAccess(node) {
+  if (node.type !== "MemberExpression" || node.object?.type !== "Identifier" || node.object.name !== "process") return false;
+  return propertyName(node.property) !== "cwd";
+}
+function isAgentWriteRequest(node) {
+  if (node.type !== "CallExpression" || node.callee?.type !== "Identifier" || node.callee.name !== "agent") return false;
+  const options = node.arguments?.[1];
+  if (options?.type !== "ObjectExpression") return false;
+  for (const prop of options.properties) {
+    if (prop.type !== "Property" || prop.computed || prop.kind !== "init" || prop.method) continue;
+    const key = propertyName(prop.key);
+    const value = prop.value;
+    if (key === "sandbox" && value.type === "Literal" && value.value === "workspace-write") return true;
+    if (key === "writeScope" && value.type === "Literal" && value.value === "worktree") return true;
+  }
+  return false;
 }
 function isMemberExpression(node, objectName, propertyName2) {
   return node?.type === "MemberExpression" && node.object?.type === "Identifier" && node.object.name === objectName && (node.property?.type === "Identifier" && node.property.name === propertyName2 || node.property?.type === "Literal" && node.property.value === propertyName2);

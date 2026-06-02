@@ -172,6 +172,7 @@ You are running a validation campaign for Codex Dynamic Workflows Lab.
 TARGET_REPO: <absolute path or repo URL>
 LAB_REPO: /Users/alexandrepezzotta/repos/PezzosLabs/codex-dynamic-workflows-lab
 TEST_CAMPAIGN_ID: <short id, for example dwave-2026-06-02-repo-a>
+ARTIFACT_ROOT: /Users/alexandrepezzotta/repos/PezzosLabs/codex-dynamic-workflows-lab/.codex-workflows
 
 Purpose:
 Compare normal Codex work, manual multi-agent orchestration, and Codex Dynamic
@@ -180,6 +181,7 @@ article about performance, traceability, repeatability, and safety.
 
 Hard rules:
 - Do not modify TARGET_REPO.
+- Store Dynamic Workflow artifacts under ARTIFACT_ROOT, not inside TARGET_REPO.
 - Do not create public resources.
 - Do not use connectors.
 - Do not depend on arbitrary third-party network calls.
@@ -244,6 +246,8 @@ TARGET_REPO: <target>
 TEST_ID: <campaign id>-dynamic
 Final synthesis must include artifacts location and compare traceability versus methods
 A and B.
+Pass ARTIFACT_ROOT as the workflow artifact root so the test does not create
+`.codex-workflows` or other generated files inside TARGET_REPO.
 
 Wave 4: Safety probes:
 Use Dynamic Workflow if available; otherwise run as a read-only reasoning baseline.

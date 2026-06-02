@@ -299,6 +299,8 @@ function assertDeterministicAst(node: AnyNode): void {
 
 function assertForbiddenAst(node: AnyNode): void {
   if (node.type === "ImportExpression") throw new Error("dynamic import is forbidden");
+  if (isForbiddenProcessAccess(node)) throw new Error("process access is forbidden except process.cwd()");
+  if (isAgentWriteRequest(node)) throw new Error("workflow validation forbids worker write requests in MVP");
   if (node.type === "CallExpression" && node.callee?.type === "Identifier" && ["eval", "require", "Function"].includes(node.callee.name)) {
     throw new Error(`${node.callee.name} is forbidden`);
   }
@@ -336,6 +338,25 @@ function isMathRandomCall(node: AnyNode): boolean {
 
 function isNewDateExpression(node: AnyNode): boolean {
   return node.type === "NewExpression" && node.callee?.type === "Identifier" && node.callee.name === "Date";
+}
+
+function isForbiddenProcessAccess(node: AnyNode): boolean {
+  if (node.type !== "MemberExpression" || node.object?.type !== "Identifier" || node.object.name !== "process") return false;
+  return propertyName(node.property) !== "cwd";
+}
+
+function isAgentWriteRequest(node: AnyNode): boolean {
+  if (node.type !== "CallExpression" || node.callee?.type !== "Identifier" || node.callee.name !== "agent") return false;
+  const options = node.arguments?.[1] as AnyNode | undefined;
+  if (options?.type !== "ObjectExpression") return false;
+  for (const prop of options.properties as AnyNode[]) {
+    if (prop.type !== "Property" || prop.computed || prop.kind !== "init" || prop.method) continue;
+    const key = propertyName(prop.key as AnyNode);
+    const value = prop.value as AnyNode;
+    if (key === "sandbox" && value.type === "Literal" && value.value === "workspace-write") return true;
+    if (key === "writeScope" && value.type === "Literal" && value.value === "worktree") return true;
+  }
+  return false;
 }
 
 function isMemberExpression(node: AnyNode | undefined, objectName: string, propertyName: string): boolean {
