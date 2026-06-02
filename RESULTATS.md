@@ -95,7 +95,7 @@ Workflows replacement.
 
 ## Fix 2026-06-02 - Git marketplace manifest
 
-- `status`: in-progress
+- `status`: done
 - `issue`: `codex plugin marketplace add pezzos/codex-dynamic-workflows-lab` failed
   because the public repository was a plugin folder, but did not yet contain a supported
   marketplace manifest.
@@ -105,6 +105,8 @@ Workflows replacement.
 - `fix`: add `.agents/plugins/marketplace.json` pointing to `source.path: "./"`, enrich
   `.codex-plugin/plugin.json` with plugin-browser metadata and `.mcp.json`, add
   `.mcp.json` for the stdio MCP server, and add `npm run plugin:validate`.
-- `validation_planned`: validate the local marketplace with temporary `CODEX_HOME`, push
-  the fix, then validate `codex plugin marketplace add pezzos/codex-dynamic-workflows-lab
-  --ref main` with temporary `CODEX_HOME`.
+- `validation`: `npm run check` passed; `npm run plugin:validate` passed;
+  `npm run pack:dry` included the marketplace and MCP files; local marketplace add with
+  temporary `CODEX_HOME` passed; after pushing commit `d82d891`, `CODEX_HOME=$(mktemp
+  -d) codex plugin marketplace add pezzos/codex-dynamic-workflows-lab --ref main`
+  passed and `codex plugin marketplace list` showed `codex-dynamic-workflows-lab`.
