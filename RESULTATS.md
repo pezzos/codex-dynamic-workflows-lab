@@ -5,7 +5,7 @@
 - `plan_id`: codex-dynamic-workflows-lab
 - `plan_version`: 0.1
 - `status`: partial
-- `public_resources`: GitHub repo planned at `https://github.com/pezzos/codex-dynamic-workflows-lab`
+- `public_resources`: GitHub repo `https://github.com/pezzos/codex-dynamic-workflows-lab`
 - `external_resources`: none
 
 ### Public Repo Review Gate
@@ -58,6 +58,12 @@
 - JSON-RPC smoke with `node dist/src/mcp-server.js`: passed `initialize` and
   `tools/list`; listed `workflow_validate`, `workflow_submit`, `workflow_status`,
   `workflow_result`, `workflow_cancel`, and `workflow_artifacts`.
+- `gh repo create pezzos/codex-dynamic-workflows-lab --public --description "Local lab
+  prototype for Codex-compatible dynamic workflows" --source=. --remote=origin`: created
+  the public GitHub repository.
+- `git push -u origin main`: pushed initial commit `1c095f1`.
+- `gh repo view pezzos/codex-dynamic-workflows-lab --json nameWithOwner,url,visibility,defaultBranchRef`:
+  verified `visibility: PUBLIC` and default branch `main`.
 
 ### Verified
 
@@ -70,6 +76,8 @@
 - CLI validates and runs the reference workflow with fake workers.
 - MCP stdio server exposes expected tools.
 - Package dry run includes code, skill, plugin manifest, README, evidence, and example.
+- GitHub repo is public under `pezzos/codex-dynamic-workflows-lab` with default branch
+  `main`.
 
 ### Not Yet Verified
 
