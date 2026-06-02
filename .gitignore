@@ -1,0 +1,6 @@
+node_modules/
+dist/
+.codex-workflows/
+.tmp/
+*.tgz
+.DS_Store

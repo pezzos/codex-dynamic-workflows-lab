@@ -1,0 +1,6 @@
+{
+  "name": "codex-dynamic-workflows-lab",
+  "version": "0.1.0",
+  "description": "Lab plugin packaging for bounded Codex dynamic workflows.",
+  "skills": "./skills/"
+}

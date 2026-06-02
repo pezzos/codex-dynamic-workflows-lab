@@ -1,0 +1,37 @@
+{
+  "name": "codex-dynamic-workflows-lab",
+  "version": "0.1.0",
+  "description": "Local lab for Codex-compatible dynamic workflow orchestration.",
+  "type": "module",
+  "bin": {
+    "codex-flow": "./dist/src/cli.js",
+    "codex-flow-mcp": "./dist/src/mcp-server.js"
+  },
+  "exports": {
+    ".": "./dist/src/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "npm run build && node --test dist/tests/*.test.js",
+    "test:offline": "npm test",
+    "lint": "npm run build && node --check dist/src/cli.js && node --check dist/src/mcp-server.js",
+    "check": "npm run lint && npm run test",
+    "pack:dry": "npm pack --dry-run"
+  },
+  "files": [
+    "dist/",
+    "skills/",
+    "examples/",
+    ".codex-plugin/",
+    "README.md",
+    "RESULTATS.md"
+  ],
+  "dependencies": {
+    "acorn": "^8.16.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "typescript": "^5.9.3"
+  },
+  "license": "MIT"
+}
