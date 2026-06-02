@@ -158,3 +158,15 @@ Workflows replacement.
   server still responds to JSON-RPC `initialize` plus `tools/list`.
 - `version`: bumped the plugin package and manifest to `0.1.1` so existing installs can
   pick up the presentation metadata as a new plugin version.
+
+## Update 2026-06-02 - Fresh session validation protocol
+
+- `status`: done
+- `issue`: article evidence needs a repeatable way to ask a fresh Codex session to run
+  deterministic function tests, comparative value tests, and safety probes without
+  losing agent identity in the outputs.
+- `fix`: add `docs/fresh-session-test-protocol.md` with preconditions, output contract,
+  Wave 2 deterministic tests, Wave 3 comparison prompts, Wave 4 safety probes, and a
+  master prompt for a fresh Codex session.
+- `packaging`: include `docs/` in `package.json` and in the marketplace plugin sync so
+  the protocol is present in the repo and installable plugin copy.

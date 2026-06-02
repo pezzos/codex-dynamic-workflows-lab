@@ -80,6 +80,13 @@ node dist/src/cli.js run examples/repo-review.workflow.js --fake
 
 Artifacts are written under `.codex-workflows/runs/<run-id>/`.
 
+## Test campaigns
+
+Use `docs/fresh-session-test-protocol.md` to delegate a full validation campaign to a
+fresh Codex session. The protocol includes deterministic function tests, comparative
+prompts for normal Codex versus manual multi-agent versus Dynamic Workflow runs, and
+read-only safety probes for article evidence.
+
 ## MCP server
 
 The package exposes a stdio MCP server:

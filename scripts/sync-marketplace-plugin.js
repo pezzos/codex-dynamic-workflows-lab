@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const pluginRoot = join(root, "plugins", "codex-dynamic-workflows-lab");
 
-const copiedDirectories = [".codex-plugin", "assets", "dist", "examples", "skills"];
+const copiedDirectories = [".codex-plugin", "assets", "dist", "docs", "examples", "skills"];
 const copiedFiles = [".mcp.json", "LICENSE", "README.md", "RESULTATS.md", "package.json"];
 
 await rm(pluginRoot, { recursive: true, force: true });

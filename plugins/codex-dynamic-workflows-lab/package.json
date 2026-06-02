@@ -22,6 +22,7 @@
   "files": [
     "dist/",
     "assets/",
+    "docs/",
     "skills/",
     "examples/",
     ".codex-plugin/",
