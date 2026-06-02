@@ -19,7 +19,8 @@ function assert(condition, message) {
 }
 
 const plugin = await readJson(join(root, ".codex-plugin", "plugin.json"));
-validatePluginManifest(plugin);
+const packageJson = await readJson(join(root, "package.json"));
+validatePluginManifest(plugin, packageJson.version);
 
 await assertExists(join(root, "dist", "src", "mcp-server.js"));
 
@@ -36,7 +37,7 @@ const marketplacePluginRoot = resolve(root, entry.source.path);
 assert(normalize(marketplacePluginRoot).startsWith(normalize(join(root, "plugins"))), "marketplace plugin path must stay under plugins/");
 
 const marketplacePlugin = await readJson(join(marketplacePluginRoot, ".codex-plugin", "plugin.json"));
-validatePluginManifest(marketplacePlugin);
+validatePluginManifest(marketplacePlugin, packageJson.version);
 assert(marketplacePlugin.name === plugin.name, "marketplace plugin name must match root plugin name");
 assert(marketplacePlugin.version === plugin.version, "marketplace plugin version must match root plugin version");
 
@@ -56,9 +57,9 @@ assert(smoke.includes("workflow_validate"), "MCP smoke must list workflow_valida
 
 console.log(JSON.stringify({ ok: true, plugin: plugin.name, marketplace: marketplace.name }, null, 2));
 
-function validatePluginManifest(candidate) {
+function validatePluginManifest(candidate, expectedVersion) {
   assert(candidate.name === "codex-dynamic-workflows-lab", "plugin name must be stable");
-  assert(candidate.version === "0.1.0", "plugin version must match package version");
+  assert(candidate.version === expectedVersion, "plugin version must match package version");
   assert(candidate.skills === "./skills/", "plugin skills path must point to ./skills/");
 assert(candidate.mcpServers === "./.mcp.json", "plugin must declare .mcp.json");
 assert(candidate.interface?.displayName, "plugin interface.displayName is required");

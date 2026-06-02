@@ -156,3 +156,5 @@ Workflows replacement.
   passed. A temporary `CODEX_HOME` local marketplace install confirmed that the
   installed plugin cache includes the workflow logo assets and that the bundled MCP
   server still responds to JSON-RPC `initialize` plus `tools/list`.
+- `version`: bumped the plugin package and manifest to `0.1.1` so existing installs can
+  pick up the presentation metadata as a new plugin version.
