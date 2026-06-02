@@ -54,6 +54,7 @@ assert(server?.args?.[0] === "./dist/plugin/mcp-server.js", "MCP server must lau
 
 const smoke = await runMcpSmoke(server.command, server.args, marketplacePluginRoot);
 assert(smoke.includes("workflow_validate"), "MCP smoke must list workflow_validate");
+assert(smoke.includes(".codex-workflows-smoke"), "MCP smoke must resolve explicit artifact roots");
 
 console.log(JSON.stringify({ ok: true, plugin: plugin.name, marketplace: marketplace.name }, null, 2));
 
@@ -101,6 +102,15 @@ function runMcpSmoke(command, args, cwd) {
           params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "validate-plugin", version: "0" } },
         }),
         JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} }),
+        JSON.stringify({
+          jsonrpc: "2.0",
+          id: 3,
+          method: "tools/call",
+          params: {
+            name: "workflow_artifacts",
+            arguments: { artifacts: join(cwd, ".codex-workflows-smoke"), runId: "smoke-run" },
+          },
+        }),
         "",
       ].join("\n"),
     );

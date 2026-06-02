@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp } from "node:fs/promises";
+import { readFile, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -100,4 +100,36 @@ return { value }
         runner: fakeRunner,
         policy: { mode: "read-only" },
     }), /forbids worker write requests/);
+});
+test("runWorkflow redacts runner results in agent and summary artifacts", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "codex-flow-test-"));
+    const secretRunner = {
+        async run(input) {
+            return {
+                agentId: input.label,
+                label: input.label,
+                status: "completed",
+                result: "finding rt_summary_secret_token_123456789",
+                durationMs: 1,
+                warnings: ["warning rt_warning_secret_token_123456789"],
+                artifacts: {},
+            };
+        },
+    };
+    const result = await runWorkflow(`
+export const meta = { name: "redaction_demo", description: "Demo workflow" }
+log("log rt_log_secret_token_123456789")
+const value = await agent("probe", { label: "probe" })
+return { value }
+`, {
+        cwd: dir,
+        artifactRoot: join(dir, "artifacts"),
+        runner: secretRunner,
+        policy: { maxAgents: 1, concurrency: 1 },
+    });
+    assert.doesNotMatch(JSON.stringify(result), /rt_summary_secret/);
+    const summary = await readFile(join(dir, "artifacts", "runs", result.runId, "summary.json"), "utf8");
+    const agentResult = await readFile(join(dir, "artifacts", "runs", result.runId, "agents", "agent-001", "result.json"), "utf8");
+    assert.doesNotMatch(summary, /rt_(summary|warning|log)_secret/);
+    assert.doesNotMatch(agentResult, /rt_summary_secret/);
 });

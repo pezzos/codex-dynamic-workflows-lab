@@ -191,3 +191,25 @@ Workflows replacement.
 - `protocol_update`: fresh-session campaigns now define `ARTIFACT_ROOT` outside the
   target repository and require Dynamic Workflow artifacts to be written there.
 - `version`: bumped plugin package and manifest to `0.1.2`.
+
+## Fix 2026-06-02 - Artifact hygiene and MCP artifact root
+
+- `status`: done
+- `input_report`: campaign `dwave-2026-06-02-bannergen` on `BannerGenerator`.
+- `normal_findings`: Wave 2 now passes after the previous hardening. Dynamic Workflow
+  produces the strongest trace package, but manual roles still produce stronger
+  analysis quality. The article claim should stay focused on traceability and
+  repeatability until successful live-worker summaries are stable.
+- `root_causes`: `workflow_artifacts` appended `runs/undefined` when called without a
+  `runId`; MCP tools allowed default artifacts under the target repo; raw stdout/stderr
+  and parsed events were written without local redaction; stdout-over-policy failures
+  discarded useful `last-message.txt` output and propagated `null` findings into
+  `summary.json`.
+- `fixes`: require explicit `artifacts` and `runId` for MCP artifact/status/result
+  reads; require explicit `artifacts` for MCP submits; add MCP input schemas; redact
+  secret-shaped tokens in stdout, stderr, events, runner results, workflow logs,
+  warnings, agent `result.json`, and `summary.json`; use scrubbed `last-message.txt` as
+  the worker result when stdout exceeds policy but the process exits successfully.
+- `validation`: added MCP artifact contract tests, runner redaction and
+  last-message-fallback tests, and workflow summary redaction tests.
+- `version`: bumped plugin package and manifest to `0.1.3`.

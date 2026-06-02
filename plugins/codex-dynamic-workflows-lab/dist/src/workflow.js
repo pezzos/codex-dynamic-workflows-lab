@@ -2,6 +2,7 @@ import vm from "node:vm";
 import { parse } from "acorn";
 import { ArtifactStore } from "./artifacts.js";
 import { normalizePolicy } from "./policy.js";
+import { redactText, redactValue } from "./redaction.js";
 export function parseWorkflowScript(script) {
     const ast = parse(script, {
         ecmaVersion: "latest",
@@ -56,7 +57,7 @@ export async function runWorkflow(script, options) {
         void store.appendEvent({ type: "phase", runId, title });
     };
     const log = (value) => {
-        const message = String(value);
+        const message = redactText(String(value));
         state.logs.push(message);
         void store.appendEvent({ type: "log", runId, message });
     };
@@ -87,13 +88,14 @@ export async function runWorkflow(script, options) {
                     schema: agentOptions.schema,
                     options: { ...agentOptions, timeoutMs: agentOptions.timeoutMs ?? policy.maxWorkerDurationMs },
                 });
-                await store.writeAgentJson(agentId, "result.json", result);
-                await store.appendEvent({ type: "agent.completed", runId, agentId, label, status: result.status });
-                state.warnings.push(...result.warnings);
-                return result.result;
+                const safeResult = redactValue(result);
+                await store.writeAgentJson(agentId, "result.json", safeResult);
+                await store.appendEvent({ type: "agent.completed", runId, agentId, label, status: safeResult.status });
+                state.warnings.push(...safeResult.warnings.map((warning) => redactText(warning)));
+                return safeResult.result;
             }
             catch (error) {
-                const message = error instanceof Error ? error.message : String(error);
+                const message = redactText(error instanceof Error ? error.message : String(error));
                 await store.appendEvent({ type: "agent.failed", runId, agentId, label, error: message });
                 state.warnings.push(`agent ${label} failed: ${message}`);
                 return null;
@@ -156,7 +158,8 @@ export async function runWorkflow(script, options) {
         filename: `${meta.name}.workflow.js`,
     }).runInContext(context, { timeout: 1_000 });
     await Promise.allSettled([...pending]);
-    assertStructuredCloneable(result);
+    const safeWorkflowResult = redactValue(result);
+    assertStructuredCloneable(safeWorkflowResult);
     const durationMs = Date.now() - started;
     await store.writeJson("summary.json", {
         runId,
@@ -166,12 +169,12 @@ export async function runWorkflow(script, options) {
         agentCount: state.agentCount,
         durationMs,
         warnings: state.warnings,
-        result,
+        result: safeWorkflowResult,
     });
     return {
         runId,
         meta,
-        result: result,
+        result: safeWorkflowResult,
         logs: state.logs,
         phases: state.phases,
         agentCount: state.agentCount,

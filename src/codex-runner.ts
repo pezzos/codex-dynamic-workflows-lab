@@ -1,9 +1,10 @@
 import { spawn } from "node:child_process";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve, join } from "node:path";
 import type { ArtifactStore } from "./artifacts.js";
 import { parseNoisyJsonl } from "./jsonl.js";
+import { redactText, redactValue } from "./redaction.js";
 import type { AgentRunInput, AgentRunOutput, WorkflowPolicy } from "./types.js";
 
 export interface CodexExecRunnerOptions {
@@ -87,21 +88,33 @@ export class CodexExecRunner {
       timeoutMs,
     });
 
+    const redactedStdout = redactText(result.stdout);
+    const redactedStderr = redactText(result.stderr);
+    const lastMessage = await readAndRedactTextFile(lastMessagePath);
     const stdoutPath = join(agentDir, "stdout.log");
     const stderrPath = join(agentDir, "stderr.log");
-    await this.store.writeAgentText(agentId, "stderr.log", result.stderr);
+    await this.store.writeAgentText(agentId, "stderr.log", redactedStderr);
 
-    if (Buffer.byteLength(result.stdout) > this.policy.maxOutputBytesPerWorker) {
-      await this.store.writeAgentText(agentId, "stdout.log", truncateUtf8(result.stdout, this.policy.maxOutputBytesPerWorker));
+    if (Buffer.byteLength(redactedStdout) > this.policy.maxOutputBytesPerWorker) {
+      await this.store.writeAgentText(agentId, "stdout.log", truncateUtf8(redactedStdout, this.policy.maxOutputBytesPerWorker));
+      const warnings = ["worker stdout exceeded policy"];
+      if (!result.timedOut && result.exitCode === 0 && lastMessage?.trim()) {
+        return this.output(agentId, input.label, "completed", lastMessage, started, warnings.concat("used last-message fallback"), {
+          stdout: stdoutPath,
+          stderr: stderrPath,
+          lastMessage: lastMessagePath,
+        });
+      }
       return this.output(agentId, input.label, "failed", null, started, ["worker stdout exceeded policy"], {
         stdout: stdoutPath,
         stderr: stderrPath,
       });
     }
 
-    await this.store.writeAgentText(agentId, "stdout.log", result.stdout);
-    const parsed = parseNoisyJsonl(result.stdout);
-    await this.store.writeAgentJson(agentId, "events.json", parsed.events);
+    await this.store.writeAgentText(agentId, "stdout.log", redactedStdout);
+    const parsed = parseNoisyJsonl(redactedStdout);
+    const events = redactValue(parsed.events);
+    await this.store.writeAgentJson(agentId, "events.json", events);
 
     if (result.timedOut) {
       return this.output(agentId, input.label, "timed_out", null, started, parsed.warnings, {
@@ -116,7 +129,7 @@ export class CodexExecRunner {
       });
     }
 
-    const finalResult = extractFinalResult(parsed.events);
+    const finalResult = lastMessage?.trim() ? lastMessage : extractFinalResult(events);
     return this.output(agentId, input.label, "completed", finalResult, started, parsed.warnings, {
       stdout: stdoutPath,
       stderr: stderrPath,
@@ -155,6 +168,17 @@ function truncateUtf8(value: string, maxBytes: number): string {
   if (buffer.byteLength <= maxBytes) return value;
   const marker = "\n[truncated: worker stdout exceeded policy]\n";
   return `${buffer.subarray(0, Math.max(0, maxBytes)).toString("utf8")}${marker}`;
+}
+
+async function readAndRedactTextFile(path: string): Promise<string | undefined> {
+  try {
+    const raw = await readFile(path, "utf8");
+    const redacted = redactText(raw);
+    if (redacted !== raw) await writeFile(path, redacted, "utf8");
+    return redacted;
+  } catch {
+    return undefined;
+  }
 }
 
 interface ProcessResult {
@@ -218,10 +242,10 @@ async function runProcess(options: {
 function extractFinalResult(events: unknown[]): unknown {
   for (let index = events.length - 1; index >= 0; index--) {
     const event = events[index] as any;
-    if (event?.type === "item.completed" && event.item?.type === "agent_message") return event.item.text;
-    if (event?.type === "turn.completed" && event.result !== undefined) return event.result;
+    if (event?.type === "item.completed" && event.item?.type === "agent_message") return redactValue(event.item.text);
+    if (event?.type === "turn.completed" && event.result !== undefined) return redactValue(event.result);
   }
-  return events.at(-1) ?? "";
+  return redactValue(events.at(-1) ?? "");
 }
 
 export async function writeSchemaFile(path: string, schema: unknown): Promise<void> {

@@ -44,10 +44,36 @@ test("CodexExecRunner keeps truncated logs when stdout exceeds policy", async ()
         label: "large",
         options: {},
     });
-    assert.equal(result.status, "failed");
+    assert.equal(result.status, "completed");
+    assert.match(String(result.result), /fake-large-result rt_\[REDACTED\]/);
     assert.ok(result.warnings.includes("worker stdout exceeded policy"));
+    assert.ok(result.warnings.includes("used last-message fallback"));
     const stdout = await readFile(join(dir, "artifacts", "runs", "run", "agents", "codex-001", "stdout.log"), "utf8");
     const stderr = await readFile(join(dir, "artifacts", "runs", "run", "agents", "codex-001", "stderr.log"), "utf8");
+    const lastMessage = await readFile(join(dir, "artifacts", "runs", "run", "agents", "codex-001", "last-message.txt"), "utf8");
+    const resultJson = await readFile(join(dir, "artifacts", "runs", "run", "agents", "codex-001", "result.json"), "utf8").catch(() => "");
     assert.match(stdout, /truncated/);
+    assert.doesNotMatch(stdout, /rt_stdout_secret/);
     assert.match(stderr, /fake large stdout/);
+    assert.doesNotMatch(stderr, /rt_stderr_secret/);
+    assert.doesNotMatch(lastMessage, /rt_large_secret/);
+    assert.doesNotMatch(resultJson, /rt_large_secret/);
+});
+test("CodexExecRunner fails oversized stdout when last-message fallback is absent", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "codex-flow-runner-"));
+    const store = new ArtifactStore({ root: join(dir, "artifacts"), runId: "run" });
+    await store.init({ name: "demo", description: "demo" }, { ...defaultPolicy, maxOutputBytesPerWorker: 16 });
+    const runner = new CodexExecRunner({
+        cwd: dir,
+        store,
+        policy: { ...defaultPolicy, maxOutputBytesPerWorker: 16 },
+        codexBin: resolve("scripts/fake-codex.js"),
+    });
+    const result = await runner.run({
+        prompt: "FAKE_LARGE_STDOUT_NO_LAST",
+        label: "large",
+        options: {},
+    });
+    assert.equal(result.status, "failed");
+    assert.ok(result.warnings.includes("worker stdout exceeded policy"));
 });
