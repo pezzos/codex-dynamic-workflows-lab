@@ -1,7 +1,7 @@
 {
   "name": "codex-dynamic-workflows-lab",
   "version": "0.1.0",
-  "description": "Experimental Codex plugin for bounded local dynamic workflow orchestration.",
+  "description": "Coordinate bounded local Codex workflows from a skill and MCP server.",
   "author": {
     "name": "Pezzos"
   },
@@ -19,8 +19,8 @@
   "mcpServers": "./.mcp.json",
   "interface": {
     "displayName": "Codex Dynamic Workflows Lab",
-    "shortDescription": "Run bounded local Codex workflow jobs",
-    "longDescription": "Package a skill and local stdio MCP server for validating, submitting, tracking, and reading bounded Codex-compatible dynamic workflow runs. The plugin is experimental and defaults to read-only workflow policy.",
+    "shortDescription": "Coordinate bounded local workflow runs",
+    "longDescription": "Turn deterministic workflow scripts into bounded local Codex jobs, then validate, submit, track, cancel, and read their artifacts through a local MCP server. Built as an experimental lab for read-only, reviewable orchestration.",
     "developerName": "Pezzos",
     "category": "Developer Tools",
     "capabilities": [
@@ -28,11 +28,13 @@
       "Read",
       "Write"
     ],
+    "composerIcon": "./assets/workflow-logo.png",
+    "logo": "./assets/workflow-logo.png",
     "websiteURL": "https://github.com/pezzos/codex-dynamic-workflows-lab",
     "defaultPrompt": [
       "Use bounded dynamic workflows to run a read-only parallel repository review"
     ],
-    "brandColor": "#1F6FEB",
+    "brandColor": "#14B8A6",
     "screenshots": []
   }
 }

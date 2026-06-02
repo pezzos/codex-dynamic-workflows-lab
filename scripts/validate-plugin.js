@@ -29,6 +29,8 @@ assert(entry, "marketplace must include this plugin");
 assert(marketplace.interface?.displayName === plugin.interface.displayName, "marketplace displayName must match plugin");
 assert(entry.source?.source === "local", "marketplace source must be local");
 assert(entry.source?.path === "./plugins/codex-dynamic-workflows-lab", "marketplace path must point at the bundled plugin directory");
+assert(entry.interface?.displayName === plugin.interface.displayName, "marketplace plugin displayName must match plugin");
+assert(entry.interface?.shortDescription === plugin.interface.shortDescription, "marketplace plugin shortDescription must match plugin");
 
 const marketplacePluginRoot = resolve(root, entry.source.path);
 assert(normalize(marketplacePluginRoot).startsWith(normalize(join(root, "plugins"))), "marketplace plugin path must stay under plugins/");
@@ -39,6 +41,8 @@ assert(marketplacePlugin.name === plugin.name, "marketplace plugin name must mat
 assert(marketplacePlugin.version === plugin.version, "marketplace plugin version must match root plugin version");
 
 await assertExists(join(marketplacePluginRoot, "skills", "dynamic-workflow", "SKILL.md"));
+await assertExists(join(marketplacePluginRoot, "assets", "workflow-logo.svg"));
+await assertExists(join(marketplacePluginRoot, "assets", "workflow-logo.png"));
 await assertExists(join(marketplacePluginRoot, "dist", "plugin", "mcp-server.js"));
 
 const mcp = await readJson(join(marketplacePluginRoot, ".mcp.json"));
@@ -56,8 +60,11 @@ function validatePluginManifest(candidate) {
   assert(candidate.name === "codex-dynamic-workflows-lab", "plugin name must be stable");
   assert(candidate.version === "0.1.0", "plugin version must match package version");
   assert(candidate.skills === "./skills/", "plugin skills path must point to ./skills/");
-  assert(candidate.mcpServers === "./.mcp.json", "plugin must declare .mcp.json");
-  assert(candidate.interface?.displayName, "plugin interface.displayName is required");
+assert(candidate.mcpServers === "./.mcp.json", "plugin must declare .mcp.json");
+assert(candidate.interface?.displayName, "plugin interface.displayName is required");
+assert(candidate.interface?.shortDescription?.length <= 80, "plugin shortDescription must stay compact");
+assert(candidate.interface?.logo === "./assets/workflow-logo.png", "plugin must declare workflow logo");
+assert(candidate.interface?.composerIcon === "./assets/workflow-logo.png", "plugin must declare workflow composer icon");
 }
 
 function runMcpSmoke(command, args, cwd) {

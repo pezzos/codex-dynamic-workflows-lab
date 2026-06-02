@@ -6,6 +6,10 @@
   "plugins": [
     {
       "name": "codex-dynamic-workflows-lab",
+      "interface": {
+        "displayName": "Codex Dynamic Workflows Lab",
+        "shortDescription": "Coordinate bounded local workflow runs"
+      },
       "source": {
         "source": "local",
         "path": "./plugins/codex-dynamic-workflows-lab"

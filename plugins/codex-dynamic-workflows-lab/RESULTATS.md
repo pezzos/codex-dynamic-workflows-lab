@@ -142,3 +142,17 @@ Workflows replacement.
   `codex plugin add codex-dynamic-workflows-lab --marketplace
   codex-dynamic-workflows-lab`, and a JSON-RPC `initialize` plus `tools/list` smoke
   from the installed plugin cache.
+
+## Update 2026-06-02 - Marketplace presentation metadata
+
+- `status`: done
+- `issue`: the Codex app marketplace row rendered the plugin with a generic file icon
+  and terse, clipped text.
+- `fix`: add `assets/workflow-logo.svg` plus a PNG render at
+  `assets/workflow-logo.png`, declare the PNG as both `interface.logo` and
+  `interface.composerIcon`, update the plugin and marketplace short descriptions, and
+  keep the marketplace plugin copy synchronized with `assets/`.
+- `validation`: `npm run check`, `npm run plugin:validate`, and `npm run pack:dry`
+  passed. A temporary `CODEX_HOME` local marketplace install confirmed that the
+  installed plugin cache includes the workflow logo assets and that the bundled MCP
+  server still responds to JSON-RPC `initialize` plus `tools/list`.
