@@ -111,6 +111,15 @@ Current campaign evidence:
   runs, and fixes. Exact aggregate usage is not available yet because not every method
   was centrally instrumented and some worker stdout hit policy limits.
 
+## Comparison And Roadmap
+
+- [`docs/ultracode-gap-map.md`](docs/ultracode-gap-map.md) records what this lab
+  currently lacks compared with Ultracode.
+- [`docs/lab-differentiators.md`](docs/lab-differentiators.md) records what this lab
+  adds through its MCP-first, policy-first boundary.
+- [`docs/token-reduction-roadmap.md`](docs/token-reduction-roadmap.md) outlines the
+  proposed path for reducing token consumption without dropping the safety posture.
+
 ## MCP server
 
 The package exposes a stdio MCP server:
