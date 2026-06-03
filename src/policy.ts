@@ -1,4 +1,6 @@
-import type { WorkflowPolicy } from "./types.js";
+import type { ReasoningEffort, WorkflowPolicy } from "./types.js";
+
+export const reasoningEfforts: readonly ReasoningEffort[] = ["minimal", "low", "medium", "high"];
 
 export const defaultPolicy: WorkflowPolicy = Object.freeze({
   mode: "read-only",
@@ -10,12 +12,14 @@ export const defaultPolicy: WorkflowPolicy = Object.freeze({
   maxWorkerDurationMs: 600_000,
   maxOutputBytesPerWorker: 200_000,
   maxArtifactBytes: 20_000_000,
+  maxTokens: null,
   allowNetwork: false,
   allowConnectors: false,
   allowDangerFullAccess: false,
   writableRoots: [],
   allowedCommands: ["codex"],
   allowedModels: [],
+  allowedReasoningEfforts: [],
   secrets: "none",
 });
 
@@ -33,6 +37,17 @@ export function validatePolicy(policy: WorkflowPolicy): void {
   if (policy.maxAgents < 1 || policy.maxAgents > 16) throw new Error("policy.maxAgents must be 1..16");
   if (policy.concurrency < 1 || policy.concurrency > policy.maxAgents) {
     throw new Error("policy.concurrency must be 1..maxAgents");
+  }
+  if (policy.maxTokens !== null && (!Number.isInteger(policy.maxTokens) || policy.maxTokens < 0)) {
+    throw new Error("policy.maxTokens must be a non-negative integer or null");
+  }
+  if (!Array.isArray(policy.allowedReasoningEfforts)) {
+    throw new Error("policy.allowedReasoningEfforts must be an array");
+  }
+  for (const effort of policy.allowedReasoningEfforts) {
+    if (!reasoningEfforts.includes(effort)) {
+      throw new Error(`policy.allowedReasoningEfforts contains unsupported value: ${effort}`);
+    }
   }
   if (policy.mode === "read-only" && policy.writableRoots.length > 0) {
     throw new Error("read-only policy cannot define writableRoots");

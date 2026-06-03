@@ -6,14 +6,32 @@ current safety posture.
 The goal is not to run fewer agents at all costs. The goal is to spend expensive
 tokens only where they improve the result.
 
-## Current Problem
+## Current Status
+
+Version `0.1.6` implements the first measurable slice:
+
+- per-worker usage parsing from Codex JSONL events;
+- run-level `aggregateUsage`, `usageUnavailableCount`, and budget status;
+- policy-level soft `maxTokens`;
+- `budget.spent()` and `budget.remaining()` inside workflow scripts;
+- validated `reasoningEffort` routing through `codex exec -c
+  model_reasoning_effort=...`;
+- artifact-visible `model` and `reasoningEffort` fields.
+
+The remaining problem is measurement quality across methods. Dynamic Workflow runs now
+produce usage data when Codex emits usage events, but the single-prompt and manual-role
+baselines still need the same timing and token instrumentation before strong cost claims
+are publishable.
+
+## Original Problem
 
 The lab has already shown that multi-agent workflows are expensive. The latest
 campaigns used several manual agents, failed worker runs, real four-worker runs,
 and follow-up fixes. Exact aggregate usage was not available because token usage
 was not centrally instrumented.
 
-Until usage is measured per worker and per run, optimization is mostly guesswork.
+Until every comparison method is measured per worker and per run, optimization claims
+are still partly guesswork.
 
 ## Design Principles
 
@@ -45,7 +63,7 @@ Token reduction must not weaken the lab's execution boundary.
 
 ## Phase 1 - Usage Accounting
 
-Add first-class usage telemetry.
+Status: implemented in `0.1.6` for Dynamic Workflow runs.
 
 Implementation targets:
 
@@ -68,14 +86,14 @@ Acceptance criteria:
 
 ## Phase 2 - Token Budgets
 
-Add a policy-level soft budget.
+Status: implemented in `0.1.6` as a soft pre-spawn gate.
 
 Implementation targets:
 
 - add `maxTokens` or `budgetTokens` to `WorkflowPolicy`;
 - track spent tokens in runtime state;
 - before launching a worker, skip it if budget is exhausted;
-- record `budget_exhausted` in warnings and summary;
+- record token-budget exhaustion in warnings and events;
 - expose remaining budget to workflow scripts through `budget.remaining()`.
 
 Important boundary:
@@ -91,12 +109,12 @@ Acceptance criteria:
 
 ## Phase 3 - Model And Reasoning Routing
 
-Add validated model/reasoning controls.
+Status: first slice implemented in `0.1.6`; automatic role profiles remain future work.
 
 Implementation targets:
 
 - reintroduce `reasoningEffort` as a supported `agent()` option;
-- validate it against `low | medium | high | xhigh`;
+- validate it against `minimal | low | medium | high`;
 - add policy allow-lists for models and reasoning levels;
 - pass reasoning to Codex only through a verified Codex CLI/config surface;
 - record model and reasoning in `command.json`, `result.json`, and
@@ -108,20 +126,20 @@ The route is not chosen freely by the worker. It is either declared by the
 workflow and accepted by policy, or selected by a deterministic runtime profile
 that is itself allowed by policy. Hidden fallbacks are not allowed.
 
-The exact command-line transport for reasoning effort is pending confirmation in
-this repo's own runner tests. Do not hardcode a `codex exec` flag until a
-no-model-call parser smoke and a real worker smoke prove the contract for the
-current Codex CLI.
+The command-line transport uses Codex config overrides:
+`codex exec -c model_reasoning_effort="low" ...`. The repo verifies that
+`codex exec` accepts `-c/--config` and unit tests the generated command arguments.
+A fresh real multi-worker rerun should still confirm usage behavior against the
+currently installed Codex CLI before publishing cost claims.
 
 Initial routing profiles:
 
 | Role | Model | Reasoning | Use |
 | --- | --- | --- | --- |
-| `scout` | `gpt-5.4-mini` | `low` or `medium` | file mapping, grep-style exploration, simple summaries |
-| `focused-reviewer` | `gpt-5.4-mini` or `gpt-5.4` | `medium` | bounded read-only review |
-| `security-reviewer` | `gpt-5.4` or `gpt-5.5` | `high` | security or correctness-sensitive findings |
-| `synthesizer` | `gpt-5.5` | `high` | final synthesis and tradeoffs |
-| `escalation` | `gpt-5.5` | `xhigh` | only when a finding is high-impact and unresolved |
+| `scout` | caller-provided mini/cheap model | `low` | file mapping, grep-style exploration, simple summaries |
+| `focused-reviewer` | caller-provided default review model | `medium` | bounded read-only review |
+| `security-reviewer` | caller-provided stronger model | `high` | security or correctness-sensitive findings |
+| `synthesizer` | caller-provided stronger model | `high` | final synthesis and tradeoffs |
 
 Acceptance criteria:
 
@@ -257,11 +275,11 @@ Comparison runs should also record the workflow shape used by each method:
 
 Start with the smallest slice that makes future decisions measurable:
 
-1. usage parsing and `aggregateUsage`;
-2. soft `budgetTokens`;
-3. validated `reasoningEffort`;
-4. artifact-visible model/reasoning settings;
-5. one routed example workflow.
+1. usage parsing and `aggregateUsage` - implemented in `0.1.6`;
+2. soft `maxTokens` - implemented in `0.1.6`;
+3. validated `reasoningEffort` - implemented in `0.1.6`;
+4. artifact-visible model/reasoning settings - implemented in `0.1.6`;
+5. one routed example workflow - implemented in `examples/routed-repo-review.workflow.js`.
 
 Do not start with UI, warm context, or worktree writes. Those are useful, but
 they do not solve the current measurement gap first.

@@ -26,12 +26,42 @@ test("CodexExecRunner uses fake codex and parses noisy JSONL", async () => {
   assert.equal(result.status, "completed");
   assert.match(String(result.result), /fake-result:hello/);
   assert.ok(result.warnings.some((warning) => warning.includes("non-json")));
+  assert.equal(result.usage?.inputTokens, 10);
+  assert.equal(result.usage?.outputTokens, 4);
+  assert.equal(result.usage?.totalTokens, 14);
 
   const command = JSON.parse(await readFile(join(dir, "artifacts", "runs", "run", "agents", "codex-001", "command.json"), "utf8"));
   assert.deepEqual(command.args.slice(0, 3), ["--ask-for-approval", "never", "exec"]);
   assert.equal(command.args.includes("--ask-for-approval") && command.args.indexOf("--ask-for-approval") > command.args.indexOf("exec"), false);
   assert.ok(command.args.includes("--ignore-user-config"));
   assert.equal(command.args[command.args.indexOf("--sandbox") + 1], "read-only");
+});
+
+test("CodexExecRunner records model and reasoning effort routing", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "codex-flow-runner-"));
+  const policy = { ...defaultPolicy, allowedModels: ["gpt-5.1-codex-mini"], allowedReasoningEfforts: ["low" as const] };
+  const store = new ArtifactStore({ root: join(dir, "artifacts"), runId: "run" });
+  await store.init({ name: "demo", description: "demo" }, policy);
+  const runner = new CodexExecRunner({
+    cwd: dir,
+    store,
+    policy,
+    codexBin: resolve("scripts/fake-codex.js"),
+  });
+
+  const result = await runner.run({
+    prompt: "hello",
+    label: "routed",
+    options: { model: "gpt-5.1-codex-mini", reasoningEffort: "low" },
+  });
+
+  assert.equal(result.model, "gpt-5.1-codex-mini");
+  assert.equal(result.reasoningEffort, "low");
+  const command = JSON.parse(await readFile(join(dir, "artifacts", "runs", "run", "agents", "codex-001", "command.json"), "utf8"));
+  assert.equal(command.model, "gpt-5.1-codex-mini");
+  assert.equal(command.reasoningEffort, "low");
+  assert.equal(command.args[command.args.indexOf("--model") + 1], "gpt-5.1-codex-mini");
+  assert.equal(command.args[command.args.indexOf("-c") + 1], 'model_reasoning_effort="low"');
 });
 
 test("CodexExecRunner isolates CODEX_HOME by default", async () => {

@@ -1,13 +1,15 @@
 import vm from "node:vm";
 import { parse } from "acorn";
 import { ArtifactStore } from "./artifacts.js";
-import { normalizePolicy } from "./policy.js";
+import { normalizePolicy, reasoningEfforts } from "./policy.js";
 import { redactText, redactValue } from "./redaction.js";
+import { addUsage, emptyUsage } from "./usage.js";
 const agentOptionKeys = new Set([
     "label",
     "phase",
     "schema",
     "model",
+    "reasoningEffort",
     "sandbox",
     "writeScope",
     "timeoutMs",
@@ -49,7 +51,14 @@ export async function runWorkflow(script, options) {
         runId,
     });
     await store.init(meta, policy);
-    const state = { logs: [], phases: [], agentCount: 0, warnings: [] };
+    const state = {
+        logs: [],
+        phases: [],
+        agentCount: 0,
+        warnings: [],
+        aggregateUsage: emptyUsage(),
+        usageUnavailableCount: 0,
+    };
     const limiter = createLimiter(policy.concurrency);
     const pending = new Set();
     const throwIfAborted = () => {
@@ -70,18 +79,40 @@ export async function runWorkflow(script, options) {
         state.logs.push(message);
         void store.appendEvent({ type: "log", runId, message });
     };
+    const budgetStatus = () => {
+        const totalTokens = policy.maxTokens;
+        const spentTokens = state.aggregateUsage.totalTokens;
+        return {
+            totalTokens,
+            spentTokens,
+            remainingTokens: totalTokens === null ? null : Math.max(0, totalTokens - spentTokens),
+            exhausted: totalTokens !== null && spentTokens >= totalTokens,
+        };
+    };
     const agent = async (prompt, rawOptions = {}) => {
         throwIfAborted();
-        if (state.agentCount >= policy.maxAgents)
-            throw new Error("workflow maxAgents exhausted");
         const agentPrompt = requireString(prompt, "agent prompt");
         const agentOptions = normalizeAgentOptions(rawOptions);
         if (agentOptions.sandbox === "workspace-write" && policy.mode !== "write-worktree") {
             throw new Error("worker requested writes but workflow policy is read-only");
         }
+        if (agentOptions.reasoningEffort &&
+            policy.allowedReasoningEfforts.length > 0 &&
+            !policy.allowedReasoningEfforts.includes(agentOptions.reasoningEffort)) {
+            throw new Error(`reasoning effort not allowed by policy: ${agentOptions.reasoningEffort}`);
+        }
         const assignedPhase = agentOptions.phase ?? state.currentPhase;
         const taskNumber = state.agentCount + 1;
         const label = agentOptions.label?.trim() || (assignedPhase ? `${assignedPhase} ${taskNumber}` : `agent ${taskNumber}`);
+        const currentBudget = budgetStatus();
+        if (currentBudget.exhausted) {
+            const warning = `agent ${label} skipped: token budget exhausted`;
+            state.warnings.push(warning);
+            await store.appendEvent({ type: "agent.skipped", runId, label, phase: assignedPhase, reason: "token_budget_exhausted" });
+            return null;
+        }
+        if (state.agentCount >= policy.maxAgents)
+            throw new Error("workflow maxAgents exhausted");
         const agentId = `agent-${String(taskNumber).padStart(3, "0")}`;
         state.agentCount++;
         const run = limiter(async () => {
@@ -98,8 +129,21 @@ export async function runWorkflow(script, options) {
                     options: { ...agentOptions, timeoutMs: agentOptions.timeoutMs ?? policy.maxWorkerDurationMs },
                 });
                 const safeResult = redactValue(result);
+                if (result.usage) {
+                    state.aggregateUsage = addUsage(state.aggregateUsage, result.usage);
+                }
+                else {
+                    state.usageUnavailableCount++;
+                }
                 await store.writeAgentJson(agentId, "result.json", safeResult);
-                await store.appendEvent({ type: "agent.completed", runId, agentId, label, status: safeResult.status });
+                await store.appendEvent({
+                    type: "agent.completed",
+                    runId,
+                    agentId,
+                    label,
+                    status: safeResult.status,
+                    usage: result.usage ?? null,
+                });
                 state.warnings.push(...safeResult.warnings.map((warning) => redactText(warning)));
                 return safeResult.result;
             }
@@ -143,9 +187,9 @@ export async function runWorkflow(script, options) {
         cwd: options.cwd,
         process: Object.freeze({ cwd: () => options.cwd }),
         budget: Object.freeze({
-            total: null,
-            spent: () => 0,
-            remaining: () => Number.POSITIVE_INFINITY,
+            total: policy.maxTokens,
+            spent: () => state.aggregateUsage.totalTokens,
+            remaining: () => budgetStatus().remainingTokens ?? Number.POSITIVE_INFINITY,
         }),
         JSON,
         Math,
@@ -170,6 +214,7 @@ export async function runWorkflow(script, options) {
     const safeWorkflowResult = redactValue(result);
     assertStructuredCloneable(safeWorkflowResult);
     const durationMs = Date.now() - started;
+    const budget = budgetStatus();
     await store.writeJson("summary.json", {
         runId,
         meta,
@@ -178,6 +223,9 @@ export async function runWorkflow(script, options) {
         agentCount: state.agentCount,
         durationMs,
         warnings: state.warnings,
+        aggregateUsage: state.aggregateUsage,
+        usageUnavailableCount: state.usageUnavailableCount,
+        budget,
         result: safeWorkflowResult,
     });
     return {
@@ -190,6 +238,9 @@ export async function runWorkflow(script, options) {
         durationMs,
         artifactRoot: store.runRoot,
         warnings: state.warnings,
+        aggregateUsage: state.aggregateUsage,
+        usageUnavailableCount: state.usageUnavailableCount,
+        budget,
     };
 }
 function normalizeAgentOptions(value) {
@@ -206,6 +257,9 @@ function normalizeAgentOptions(value) {
     if (options.writeScope !== undefined && !["none", "worktree"].includes(String(options.writeScope))) {
         throw new Error("agent writeScope must be none or worktree");
     }
+    if (options.reasoningEffort !== undefined && !reasoningEfforts.includes(String(options.reasoningEffort))) {
+        throw new Error("agent reasoningEffort must be minimal, low, medium, or high");
+    }
     if (options.timeoutMs !== undefined && (typeof options.timeoutMs !== "number" || !Number.isFinite(options.timeoutMs))) {
         throw new Error("agent timeoutMs must be a finite number");
     }
@@ -214,6 +268,7 @@ function normalizeAgentOptions(value) {
         label: optionalString(options.label, "agent label"),
         phase: optionalString(options.phase, "agent phase"),
         model: optionalString(options.model, "agent model"),
+        reasoningEffort: options.reasoningEffort,
         sandbox: options.sandbox,
         writeScope: options.writeScope,
     };
@@ -340,6 +395,9 @@ function assertAgentOptionsAst(node) {
         }
         if (key === "writeScope" && value.type === "Literal" && value.value === "worktree") {
             throw new Error("workflow validation forbids worker write requests in MVP");
+        }
+        if (key === "reasoningEffort" && value.type === "Literal" && !reasoningEfforts.includes(String(value.value))) {
+            throw new Error("workflow validation forbids unsupported reasoningEffort");
         }
     }
 }

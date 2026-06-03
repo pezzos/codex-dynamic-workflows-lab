@@ -103,7 +103,8 @@ Unsafe constructs:
 - `process.env`;
 - request to widen read-only policy into `workspace-write`.
 - nested or unknown worker options such as `policy: { sandbox: "workspace-write" }`,
-  `allowedTools`, `reasoningEffort`, or per-worker output limits.
+  `allowedTools`, or per-worker output limits.
+- unsupported `reasoningEffort` values such as `"xhigh"`.
 
 ## Wave 3: Comparative Value Tests
 

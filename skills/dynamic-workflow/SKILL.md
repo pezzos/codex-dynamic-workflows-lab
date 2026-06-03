@@ -38,8 +38,16 @@ Do not use for small single-file fixes or ordinary sequential work.
 4. Use `workflow_artifacts` only for local artifact metadata.
 
 Unknown `agent()` option keys are rejected. Do not pass worker-level `policy` objects,
-`allowedTools`, `reasoningEffort`, or per-worker output limits unless the lab explicitly
-implements those options later.
+`allowedTools`, or per-worker output limits.
+
+Supported low-cost routing options:
+
+- `model`: optional Codex model name, restricted by `policy.allowedModels` when set.
+- `reasoningEffort`: optional `minimal`, `low`, `medium`, or `high`, restricted by
+  `policy.allowedReasoningEfforts` when set.
+- `budget.remaining()` and `budget.spent()` are available inside the workflow. The
+  `maxTokens` policy is a soft pre-spawn gate: it skips new workers after the budget is
+  exhausted, but does not cancel workers already running.
 
 ## Minimal Script
 

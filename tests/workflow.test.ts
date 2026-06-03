@@ -83,7 +83,6 @@ test("parseWorkflowScript rejects unsupported literal agent options", () => {
     '{ label: "probe", unexpected: true }',
     '{ label: "probe", allowedTools: ["shell"] }',
     '{ label: "probe", maxOutputBytes: 1024 }',
-    '{ label: "probe", reasoningEffort: "high" }',
   ]) {
     assert.throws(
       () =>
@@ -103,6 +102,25 @@ export const meta = { name: "read_worker", description: "Demo workflow" }
 return agent("read", { label: "read", sandbox: "read-only" })
 `);
   assert.match(parsed.body, /sandbox/);
+});
+
+test("parseWorkflowScript accepts supported reasoning effort routing", () => {
+  const parsed = parseWorkflowScript(`
+export const meta = { name: "reasoning_worker", description: "Demo workflow" }
+return agent("read", { label: "read", reasoningEffort: "low" })
+`);
+  assert.match(parsed.body, /reasoningEffort/);
+});
+
+test("parseWorkflowScript rejects unsupported reasoning effort values", () => {
+  assert.throws(
+    () =>
+      parseWorkflowScript(`
+export const meta = { name: "bad_reasoning", description: "bad" }
+return agent("probe", { label: "probe", reasoningEffort: "xhigh" })
+`),
+    /unsupported reasoningEffort/,
+  );
 });
 
 test("runWorkflow executes phases and parallel agents", async () => {
@@ -127,6 +145,94 @@ return { results }
   assert.equal(result.agentCount, 2);
   assert.deepEqual(result.phases, ["Scan"]);
   assert.deepEqual((result.result as any).results, ["result:a", "result:b"]);
+});
+
+test("runWorkflow aggregates token usage and exposes budget helpers", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "codex-flow-test-"));
+  const usageRunner: AgentRunner = {
+    async run(input) {
+      return {
+        agentId: input.label,
+        label: input.label,
+        status: "completed",
+        result: {
+          prompt: input.prompt,
+          spent: 0,
+        },
+        durationMs: 1,
+        warnings: [],
+        artifacts: {},
+        usage: { inputTokens: 7, cachedInputTokens: 2, outputTokens: 3, reasoningOutputTokens: 1, totalTokens: 11 },
+      };
+    },
+  };
+
+  const result = await runWorkflow(
+    `
+export const meta = { name: "usage_demo", description: "Demo workflow" }
+const first = await agent("a", { label: "a", reasoningEffort: "low" })
+const afterFirst = { spent: budget.spent(), remaining: budget.remaining() }
+const second = await agent("b", { label: "b", reasoningEffort: "low" })
+return { first, second, afterFirst, finalSpent: budget.spent() }
+`,
+    {
+      cwd: dir,
+      artifactRoot: join(dir, "artifacts"),
+      runner: usageRunner,
+      policy: { maxAgents: 2, concurrency: 1, maxTokens: 30, allowedReasoningEfforts: ["low"] },
+    },
+  );
+
+  assert.equal(result.agentCount, 2);
+  assert.equal(result.aggregateUsage.totalTokens, 22);
+  assert.equal(result.budget.totalTokens, 30);
+  assert.equal(result.budget.remainingTokens, 8);
+  assert.equal((result.result as any).afterFirst.spent, 11);
+  assert.equal((result.result as any).afterFirst.remaining, 19);
+  const summary = JSON.parse(await readFile(join(dir, "artifacts", "runs", result.runId, "summary.json"), "utf8"));
+  assert.equal(summary.aggregateUsage.totalTokens, 22);
+  assert.equal(summary.budget.remainingTokens, 8);
+});
+
+test("runWorkflow skips new workers after token budget is exhausted", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "codex-flow-test-"));
+  let calls = 0;
+  const usageRunner: AgentRunner = {
+    async run(input) {
+      calls++;
+      return {
+        agentId: input.label,
+        label: input.label,
+        status: "completed",
+        result: `result:${input.prompt}`,
+        durationMs: 1,
+        warnings: [],
+        artifacts: {},
+        usage: { inputTokens: 6, cachedInputTokens: 0, outputTokens: 0, reasoningOutputTokens: 0, totalTokens: 6 },
+      };
+    },
+  };
+
+  const result = await runWorkflow(
+    `
+export const meta = { name: "budget_demo", description: "Demo workflow" }
+const first = await agent("a", { label: "a" })
+const second = await agent("b", { label: "b" })
+return { first, second }
+`,
+    {
+      cwd: dir,
+      artifactRoot: join(dir, "artifacts"),
+      runner: usageRunner,
+      policy: { maxAgents: 2, concurrency: 1, maxTokens: 5 },
+    },
+  );
+
+  assert.equal(calls, 1);
+  assert.equal(result.agentCount, 1);
+  assert.equal((result.result as any).second, null);
+  assert.equal(result.budget.exhausted, true);
+  assert.ok(result.warnings.some((warning) => warning.includes("token budget exhausted")));
 });
 
 test("runWorkflow rejects policy widening to workspace-write", async () => {

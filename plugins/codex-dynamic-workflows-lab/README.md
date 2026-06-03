@@ -9,15 +9,16 @@ internals.
 
 ## Status
 
-- Current version: `0.1.5`
+- Current version: `0.1.6`
 - Plugin: Codex marketplace-ready experimental lab
 - Public-safety status: published as an experimental reader-facing lab artifact
 - Real workers: authenticated read-only `codex exec` smoke and one four-worker
   comparative campaign have completed
 - Writes: read-only by default; write mode is not validated for production use
 - Network/connectors: disabled in policy
-- Token/cost status: multi-agent campaigns are expensive; aggregate token usage has not
-  yet been centrally instrumented
+- Token/cost status: multi-agent campaigns are expensive; per-worker usage,
+  run-level `aggregateUsage`, soft `maxTokens`, and validated `reasoningEffort`
+  routing are now implemented, but comparative token benchmarks are still pending
 
 ## Install
 
@@ -81,6 +82,7 @@ server without running `npm install` first.
 npm test
 node dist/src/cli.js validate examples/repo-review.workflow.js
 node dist/src/cli.js run examples/repo-review.workflow.js --fake
+node dist/src/cli.js validate examples/routed-repo-review.workflow.js
 ```
 
 Artifacts are written under `.codex-workflows/runs/<run-id>/`.
@@ -108,8 +110,32 @@ Current campaign evidence:
   coverage for frontend/backend suites, large coordination modules, and documentation
   drift.
 - Token use was high across failed campaigns, manual comparison agents, real multi-worker
-  runs, and fixes. Exact aggregate usage is not available yet because not every method
-  was centrally instrumented and some worker stdout hit policy limits.
+  runs, and fixes. Version `0.1.6` adds first-class Dynamic Workflow usage accounting,
+  but the single-prompt and manual-role baselines still need centrally instrumented
+  reruns before publishing comparative cost claims.
+
+## Token Controls
+
+Version `0.1.6` implements the first token-reduction slice:
+
+- per-worker `usage` is parsed from Codex JSONL `turn.completed.usage` events when
+  Codex emits it;
+- run-level `aggregateUsage`, `usageUnavailableCount`, and `budget` are written to
+  `summary.json` and returned by workflow results;
+- `policy.maxTokens` acts as a soft pre-spawn budget gate. It skips new workers after
+  the budget is exhausted, but lets already-running workers finish;
+- `agent(..., { reasoningEffort })` supports `minimal`, `low`, `medium`, and `high`;
+- `policy.allowedReasoningEfforts` can restrict which reasoning levels a workflow may
+  request;
+- selected `model` and `reasoningEffort` are recorded in `command.json` and
+  `result.json`.
+
+The routed example is validation-friendly and accepts model names through `args`, so
+users can choose the Codex models available in their own environment:
+
+```bash
+node dist/src/cli.js run examples/routed-repo-review.workflow.js --fake
+```
 
 ## Comparison And Roadmap
 
@@ -185,12 +211,12 @@ resource actions.
 These branches are not validated yet:
 
 - write mode in isolated worktrees;
-- repeat comparative multi-worker campaigns through the `0.1.5` detached
+- repeat comparative multi-worker campaigns through the `0.1.6` detached
   `workflow_submit` plus polling contract;
 - process-tree termination for worker children and grandchildren;
 - formal artifact DLP that fails on raw credential-shaped values;
 - strict duration and token accounting across single prompt, manual roles, and Dynamic
-  Workflow runs;
+  Workflow comparison runs;
 
 ## Related article
 

@@ -14,8 +14,8 @@ worker orchestration. It prioritizes explicit policy, isolated worker auth,
 local artifacts, deterministic validation, and conservative claims.
 
 Ultracode is a broader interactive orchestration product. It provides a larger
-CLI surface, a live dashboard, richer workflow primitives, worker usage
-accounting, model/reasoning controls, resume paths, and workflow libraries.
+CLI surface, a live dashboard, richer workflow primitives, automatic routing,
+resume paths, and workflow libraries.
 
 ## Comparison Methodology
 
@@ -39,45 +39,40 @@ repo against a safety boundary in the other and draw the wrong conclusion.
 
 ### 1. Token And Usage Accounting
 
-The lab does not yet parse and aggregate token usage from Codex JSONL events.
-Current campaign evidence says token use was high, but exact aggregate usage was
-not centrally instrumented.
+Basic Dynamic Workflow usage accounting is implemented in `0.1.6`. The lab parses
+Codex JSONL `turn.completed.usage` events, writes per-worker `usage`, and writes
+run-level `aggregateUsage`, `usageUnavailableCount`, and `budget` fields.
 
-Missing pieces:
+Remaining gaps:
 
-- per-worker usage in `agent-*/result.json`;
-- run-level `aggregateUsage` in `summary.json`;
-- accounting for `input_tokens`, `cached_input_tokens`, `output_tokens`, and
-  `reasoning_output_tokens`;
 - comparison reports that show cost by method, role, phase, and model.
+- real reruns proving the usage contract across current Codex CLI versions.
 
 ### 2. Budget Gates
 
-The lab has duration, output, concurrency, and agent-count limits, but no token
-budget gate.
+Basic budget gates are implemented in `0.1.6`. The top-level policy supports
+`maxTokens`; the runtime exposes `budget.spent()` and `budget.remaining()`; new
+workers are skipped once the soft budget is exhausted.
 
-Missing pieces:
+Remaining gaps:
 
-- policy-level `maxTokens` or `budgetTokens`;
-- pre-spawn budget checks before launching a worker;
-- run-level stop reason when a budget is exhausted;
-- clear distinction between soft budgets and hard cancellation.
+- hard cancellation of already-running workers;
+- richer budget display and method-level comparison reports.
 
 ### 3. Model And Reasoning Routing
 
 The lab supports a per-worker `model` option and an `allowedModels` policy list.
-It does not support per-worker `reasoningEffort`, role-based defaults, or
-automatic model routing.
+Version `0.1.6` adds per-worker `reasoningEffort`, policy allow-lists, and
+artifact-visible routing fields.
 
-Missing pieces:
+Remaining gaps:
 
-- `reasoningEffort` as a validated worker option;
-- policy allow-lists for reasoning levels;
 - built-in role profiles such as scout, verifier, security reviewer, and
   synthesizer;
 - simple routing rules that prefer cheaper models for narrow workers and reserve
   expensive models for hard reasoning or synthesis;
-- run artifacts that record why a model/reasoning pair was selected.
+- run artifacts that explain why a model/reasoning pair was selected, not only
+  what was selected.
 
 ### 4. Warm Context, Resume, And Cache
 

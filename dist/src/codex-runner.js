@@ -3,7 +3,9 @@ import { chmod, copyFile, lstat, mkdir, mkdtemp, readFile, realpath, rm, writeFi
 import { homedir, tmpdir } from "node:os";
 import { resolve, join, sep } from "node:path";
 import { parseNoisyJsonl } from "./jsonl.js";
+import { reasoningEfforts } from "./policy.js";
 import { redactText, redactValue } from "./redaction.js";
+import { latestUsageFromEvents } from "./usage.js";
 export class CodexExecRunner {
     cwd;
     store;
@@ -34,6 +36,14 @@ export class CodexExecRunner {
         if (input.options.model && this.policy.allowedModels.length > 0 && !this.policy.allowedModels.includes(input.options.model)) {
             throw new Error(`model not allowed by policy: ${input.options.model}`);
         }
+        if (input.options.reasoningEffort && !reasoningEfforts.includes(input.options.reasoningEffort)) {
+            throw new Error(`unsupported reasoning effort: ${input.options.reasoningEffort}`);
+        }
+        if (input.options.reasoningEffort &&
+            this.policy.allowedReasoningEfforts.length > 0 &&
+            !this.policy.allowedReasoningEfforts.includes(input.options.reasoningEffort)) {
+            throw new Error(`reasoning effort not allowed by policy: ${input.options.reasoningEffort}`);
+        }
         if (sandbox === "workspace-write") {
             const resolvedCwd = resolve(this.cwd);
             if (!this.policy.writableRoots.some((root) => resolvedCwd.startsWith(resolve(root)))) {
@@ -57,12 +67,16 @@ export class CodexExecRunner {
             args.push("--output-schema", schemaPath);
         if (input.options.model)
             args.push("--model", input.options.model);
+        if (input.options.reasoningEffort)
+            args.push("-c", `model_reasoning_effort="${input.options.reasoningEffort}"`);
         args.push("-");
         await this.store.writeAgentJson(agentId, "command.json", {
             command: this.codexBin,
             args,
             cwd: this.cwd,
             sandbox,
+            model: input.options.model,
+            reasoningEffort: input.options.reasoningEffort,
         });
         const worker = await this.workerEnv(agentId);
         const timeoutMs = input.options.timeoutMs ?? this.policy.maxWorkerDurationMs;
@@ -82,6 +96,8 @@ export class CodexExecRunner {
         }
         const redactedStdout = redactText(result.stdout);
         const redactedStderr = redactText(result.stderr);
+        const parsed = parseNoisyJsonl(redactedStdout);
+        const usage = latestUsageFromEvents(parsed.events);
         const lastMessage = await readAndRedactTextFile(lastMessagePath);
         const stdoutPath = join(agentDir, "stdout.log");
         const stderrPath = join(agentDir, "stderr.log");
@@ -94,35 +110,34 @@ export class CodexExecRunner {
                     stdout: stdoutPath,
                     stderr: stderrPath,
                     lastMessage: lastMessagePath,
-                });
+                }, input, usage);
             }
             return this.output(agentId, input.label, "failed", null, started, ["worker stdout exceeded policy"], {
                 stdout: stdoutPath,
                 stderr: stderrPath,
-            });
+            }, input, usage);
         }
         await this.store.writeAgentText(agentId, "stdout.log", redactedStdout);
-        const parsed = parseNoisyJsonl(redactedStdout);
         const events = redactValue(parsed.events);
         await this.store.writeAgentJson(agentId, "events.json", events);
         if (result.timedOut) {
             return this.output(agentId, input.label, "timed_out", null, started, parsed.warnings, {
                 stdout: stdoutPath,
                 stderr: stderrPath,
-            });
+            }, input, usage);
         }
         if (result.exitCode !== 0) {
             return this.output(agentId, input.label, "failed", null, started, parsed.warnings.concat(`exit ${result.exitCode}`), {
                 stdout: stdoutPath,
                 stderr: stderrPath,
-            });
+            }, input, usage);
         }
         const finalResult = lastMessage?.trim() ? lastMessage : extractFinalResult(events);
         return this.output(agentId, input.label, "completed", finalResult, started, parsed.warnings, {
             stdout: stdoutPath,
             stderr: stderrPath,
             lastMessage: lastMessagePath,
-        });
+        }, input, usage);
     }
     async workerEnv(agentId) {
         const home = await mkdtemp(join(tmpdir(), `codex-flow-home-${agentId}-`));
@@ -149,8 +164,19 @@ export class CodexExecRunner {
             throw error;
         }
     }
-    output(agentId, label, status, result, started, warnings, artifacts) {
-        return { agentId, label, status, result, durationMs: Date.now() - started, warnings, artifacts };
+    output(agentId, label, status, result, started, warnings, artifacts, input, usage) {
+        return {
+            agentId,
+            label,
+            status,
+            result,
+            durationMs: Date.now() - started,
+            warnings,
+            artifacts,
+            model: input.options.model,
+            reasoningEffort: input.options.reasoningEffort,
+            usage,
+        };
     }
 }
 async function copyCodexAuthOnly(env, workerCodexHome) {

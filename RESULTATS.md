@@ -301,12 +301,37 @@ Workflows replacement.
   large coordination modules, and documentation drift.
 - `token_cost_note`: this lab consumed a large number of tokens across failed worker
   campaigns, manual comparison agents, successful multi-worker runs, and follow-up fixes.
-  Exact aggregate token usage is not available because the single-agent and manual-role
-  baselines were not centrally instrumented, and some worker stdout exceeded policy. Any
-  future performance article claim must capture token usage per method and per worker.
+  At campaign time, exact aggregate token usage was not available because the
+  single-agent and manual-role baselines were not centrally instrumented, and some
+  worker stdout exceeded policy. Version `0.1.6` adds Dynamic Workflow usage
+  instrumentation, but any future performance article claim must still capture token
+  usage per method and per worker.
 - `remaining_limits`: write-mode worktrees, process-tree termination, formal artifact DLP,
-  lower-noise worker output capture, repeat campaigns through the `0.1.5` detached
+  lower-noise worker output capture, repeat campaigns through the `0.1.6` detached
   submit/poll contract, and strict timing/token accounting across all comparison methods.
 - `article_claim`: the defensible claim is now that Codex Dynamic Workflows Lab improves
   traceability and repeatability for bounded read-only multi-agent runs. Do not claim
   production-ready safety, lower cost, or general analysis superiority.
+
+## Update 2026-06-03 - Token reduction controls
+
+- `status`: done
+- `issue`: the comparative campaigns showed high token consumption, but the lab could
+  not centrally report per-worker or run-level token usage, enforce even a soft token
+  budget, or route workers by reasoning level.
+- `fixes`: add stable `TokenUsage` normalization for Codex JSONL usage events; write
+  per-worker `usage`, `model`, and `reasoningEffort` into results; write run-level
+  `aggregateUsage`, `usageUnavailableCount`, and `budget` into `summary.json`; add
+  policy `maxTokens` as a soft pre-spawn gate; expose `budget.spent()` and
+  `budget.remaining()` to workflow scripts; support validated `agent()` option
+  `reasoningEffort` with policy `allowedReasoningEfforts`; pass reasoning to Codex via
+  `codex exec -c model_reasoning_effort="..."`; add a routed repo-review example.
+- `scope_note`: this does not prove lower cost yet. It creates the instrumentation and
+  controls needed to rerun the comparison with token metrics. The budget is soft and
+  does not cancel in-flight workers.
+- `tests`: `npm test` passed with 35 tests covering usage parsing, routing command
+  arguments, policy validation, runtime aggregation, budget skip behavior, strict
+  worker option validation, auth isolation, redaction, MCP submit, and artifact
+  contracts.
+- `validation`: `npm run build` passed and synchronized the marketplace plugin bundle.
+- `version`: bumped package and plugin manifest to `0.1.6`.

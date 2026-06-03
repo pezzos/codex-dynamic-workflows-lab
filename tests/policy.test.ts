@@ -6,6 +6,8 @@ test("normalizePolicy rejects unsupported permissions", () => {
   assert.throws(() => normalizePolicy({ allowNetwork: true as false }), /network/);
   assert.throws(() => normalizePolicy({ allowDangerFullAccess: true as false }), /danger/);
   assert.throws(() => normalizePolicy({ secrets: "everything" as "none" }), /policy\.secrets/);
+  assert.throws(() => normalizePolicy({ maxTokens: -1 }), /policy\.maxTokens/);
+  assert.throws(() => normalizePolicy({ allowedReasoningEfforts: ["xhigh" as "high"] }), /allowedReasoningEfforts/);
 });
 
 test("stablePolicyHash is canonical", () => {

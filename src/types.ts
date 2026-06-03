@@ -30,11 +30,29 @@ export interface WorkflowMeta {
   phases?: WorkflowMetaPhase[];
 }
 
+export type ReasoningEffort = "minimal" | "low" | "medium" | "high";
+
+export interface TokenUsage {
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+  reasoningOutputTokens: number;
+  totalTokens: number;
+}
+
+export interface TokenBudgetStatus {
+  totalTokens: number | null;
+  spentTokens: number;
+  remainingTokens: number | null;
+  exhausted: boolean;
+}
+
 export interface AgentOptions {
   label?: string;
   phase?: string;
   schema?: JsonSchema;
   model?: string;
+  reasoningEffort?: ReasoningEffort;
   sandbox?: "read-only" | "workspace-write";
   writeScope?: "none" | "worktree";
   timeoutMs?: number;
@@ -52,12 +70,14 @@ export interface WorkflowPolicy {
   maxArtifactBytes: number;
   maxToolCallsPerWorker?: number;
   maxEstimatedUsd?: number;
+  maxTokens: number | null;
   allowNetwork: false;
   allowConnectors: false;
   allowDangerFullAccess: false;
   writableRoots: string[];
   allowedCommands: string[];
   allowedModels: string[];
+  allowedReasoningEfforts: ReasoningEffort[];
   secrets: "none" | "codex-auth-only";
 }
 
@@ -78,6 +98,9 @@ export interface AgentRunOutput {
   durationMs: number;
   warnings: string[];
   artifacts: Record<string, string>;
+  model?: string;
+  reasoningEffort?: ReasoningEffort;
+  usage?: TokenUsage | null;
 }
 
 export interface AgentRunner {
@@ -94,4 +117,7 @@ export interface WorkflowRunResult<T = unknown> {
   durationMs: number;
   artifactRoot: string;
   warnings: string[];
+  aggregateUsage: TokenUsage;
+  usageUnavailableCount: number;
+  budget: TokenBudgetStatus;
 }
