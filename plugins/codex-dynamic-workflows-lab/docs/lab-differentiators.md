@@ -78,13 +78,15 @@ temporary worker homes are removed after execution.
 This is still not secret-safe against a malicious worker that can read its own
 temporary `CODEX_HOME`, but it is config-minimal by design.
 
-### 5. Artifact Redaction
+### 5. Artifact Output Audit
 
-The lab redacts secret-shaped values in worker stdout, stderr, parsed events,
-runner results, workflow logs, warnings, agent result files, and summary output.
+The lab audits worker stdout, stderr, last-message, parsed events, runner results,
+workflow logs, warnings, agent result files, summary output, MCP returns, and CLI
+returns before persistence or return. Secret-like worker output is replaced by a
+sentinel plus `capture-metadata.json` rather than written as raw text.
 
-This is not a formal DLP guarantee, but it is already part of the runtime rather
-than only a reporting convention.
+This is not a formal DLP guarantee, but it is part of the runtime rather than only a
+reporting convention. A run with secret-like findings is invalid for benchmark claims.
 
 ### 6. Deterministic Script Validation
 
@@ -119,7 +121,7 @@ The lab does not currently claim:
 - complete DLP protection.
 
 The defensible claim is narrower: traceability and repeatability for bounded
-read-only multi-agent Codex workflows.
+read-only multi-agent Codex workflows, with explicit evidence-validity metadata.
 
 ## Short Reddit Reply Material
 
@@ -143,4 +145,3 @@ Ultracode is closer to an interactive workflow product.
 
 This lab is closer to a policy-first, MCP-callable experiment for auditable
 local Codex worker runs.
-

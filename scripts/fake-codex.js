@@ -59,6 +59,23 @@ process.stdin.on("end", () => {
     console.log(`rt_stdout_secret_token_123456789 ${"x".repeat(4096)}`);
     return;
   }
+  if (stdin.includes("FAKE_SECRET_STDOUT")) {
+    const fakeSecret = "local_api_key_1234567890abcdef";
+    writeLastMessage(`secret last ${fakeSecret}`);
+    process.stderr.write(`secret stderr ${fakeSecret}\n`);
+    console.log(
+      JSON.stringify({
+        type: "item.completed",
+        item: {
+          type: "agent_message",
+          text: `secret event ${fakeSecret}`,
+        },
+      }),
+    );
+    console.log(JSON.stringify({ type: "turn.completed", usage: { input_tokens: 3, output_tokens: 2 } }));
+    console.log(`secret stdout ${fakeSecret}`);
+    return;
+  }
   console.log(JSON.stringify({ type: "thread.started", thread_id: "fake-thread" }));
   console.log("not json but tolerated");
   console.log(

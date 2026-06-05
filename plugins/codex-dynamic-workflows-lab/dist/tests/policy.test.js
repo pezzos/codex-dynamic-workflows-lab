@@ -7,6 +7,7 @@ test("normalizePolicy rejects unsupported permissions", () => {
     assert.throws(() => normalizePolicy({ secrets: "everything" }), /policy\.secrets/);
     assert.throws(() => normalizePolicy({ maxTokens: -1 }), /policy\.maxTokens/);
     assert.throws(() => normalizePolicy({ allowedReasoningEfforts: ["xhigh"] }), /allowedReasoningEfforts/);
+    assert.throws(() => normalizePolicy({ allowedRouteProfiles: ["director"] }), /allowedRouteProfiles/);
 });
 test("stablePolicyHash is canonical", () => {
     const a = normalizePolicy({ concurrency: 2, maxAgents: 4 });

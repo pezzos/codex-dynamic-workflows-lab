@@ -3,10 +3,21 @@ import { chmod, copyFile, lstat, mkdir, mkdtemp, readFile, realpath, rm, writeFi
 import { homedir, tmpdir } from "node:os";
 import { resolve, join, sep } from "node:path";
 import type { ArtifactStore } from "./artifacts.js";
+import {
+  auditCompletenessForMode,
+  findingKinds,
+  resolveOutputAuditMode,
+  sanitizeText,
+  sanitizeValue,
+  secretSentinel,
+  sha256,
+} from "./hygiene.js";
 import { parseNoisyJsonl } from "./jsonl.js";
 import { reasoningEfforts } from "./policy.js";
+import { routeProfileIds } from "./profiles.js";
 import { redactText, redactValue } from "./redaction.js";
-import type { AgentRunInput, AgentRunOutput, WorkflowPolicy } from "./types.js";
+import type { SafetyFinding } from "./safety.js";
+import type { AgentRunInput, AgentRunOutput, AuditMetadata, EvidenceValidity, ResultSource, WorkflowPolicy } from "./types.js";
 import { latestUsageFromEvents } from "./usage.js";
 
 export interface CodexExecRunnerOptions {
@@ -36,9 +47,8 @@ export class CodexExecRunner {
   async run(input: AgentRunInput): Promise<AgentRunOutput> {
     const started = Date.now();
     const agentId = input.agentId ?? `codex-${String(++this.count).padStart(3, "0")}`;
-    const agentDir = await this.store.initAgent(agentId, input.label, input.prompt);
+    await this.store.initAgent(agentId, input.label, input.prompt);
     const schemaPath = input.schema ? await this.store.writeAgentJson(agentId, "schema.json", input.schema) : undefined;
-    const lastMessagePath = join(agentDir, "last-message.txt");
     const sandbox = input.options.sandbox ?? (this.policy.mode === "read-only" ? "read-only" : "workspace-write");
     if (sandbox === "workspace-write" && this.policy.mode !== "write-worktree") {
       throw new Error("workspace-write worker rejected by read-only policy");
@@ -51,6 +61,16 @@ export class CodexExecRunner {
     }
     if (input.options.reasoningEffort && !reasoningEfforts.includes(input.options.reasoningEffort)) {
       throw new Error(`unsupported reasoning effort: ${input.options.reasoningEffort}`);
+    }
+    if (input.options.profile && !routeProfileIds().includes(input.options.profile)) {
+      throw new Error(`unsupported route profile: ${input.options.profile}`);
+    }
+    if (
+      input.options.profile &&
+      this.policy.allowedRouteProfiles.length > 0 &&
+      !this.policy.allowedRouteProfiles.includes(input.options.profile)
+    ) {
+      throw new Error(`route profile not allowed by policy: ${input.options.profile}`);
     }
     if (
       input.options.reasoningEffort &&
@@ -66,6 +86,8 @@ export class CodexExecRunner {
       }
     }
 
+    const lastMessageDir = await mkdtemp(join(tmpdir(), `codex-flow-last-message-${agentId}-`));
+    const lastMessagePath = join(lastMessageDir, "last-message.txt");
     const args = [
       "--ask-for-approval",
       "never",
@@ -91,6 +113,7 @@ export class CodexExecRunner {
       sandbox,
       model: input.options.model,
       reasoningEffort: input.options.reasoningEffort,
+      profile: input.options.profile,
     });
 
     const worker = await this.workerEnv(agentId);
@@ -109,54 +132,109 @@ export class CodexExecRunner {
       await cleanupWorkerTempDirs(worker.tempDirs);
     }
 
-    const redactedStdout = redactText(result.stdout);
-    const redactedStderr = redactText(result.stderr);
-    const parsed = parseNoisyJsonl(redactedStdout);
+    const resolvedAuditMode = resolveOutputAuditMode(this.policy);
+    const parsed = parseNoisyJsonl(result.stdout);
     const usage = latestUsageFromEvents(parsed.events);
-    const lastMessage = await readAndRedactTextFile(lastMessagePath);
-    const stdoutPath = join(agentDir, "stdout.log");
-    const stderrPath = join(agentDir, "stderr.log");
-    await this.store.writeAgentText(agentId, "stderr.log", redactedStderr);
+    const lastMessage = await readTextFile(lastMessagePath);
+    await rm(lastMessageDir, { recursive: true, force: true, maxRetries: 2 }).catch(() => undefined);
+    const stdoutOverflowed = Buffer.byteLength(result.stdout) > this.policy.maxOutputBytesPerWorker;
+    const stdoutFallbackUsed = stdoutOverflowed && !result.timedOut && result.exitCode === 0 && !!lastMessage?.trim();
+    const stdoutAudit = sanitizeText("agent.stdout", result.stdout, { suppressOnSecret: true });
+    const stderrAudit = sanitizeText("agent.stderr", result.stderr, { suppressOnSecret: true });
+    const lastMessageAudit = sanitizeText("agent.lastMessage", lastMessage ?? "", { suppressOnSecret: true });
+    const eventsAudit = sanitizeValue("agent.events", parsed.events, { suppressOnSecret: true });
 
-    if (Buffer.byteLength(redactedStdout) > this.policy.maxOutputBytesPerWorker) {
-      await this.store.writeAgentText(agentId, "stdout.log", truncateUtf8(redactedStdout, this.policy.maxOutputBytesPerWorker));
-      const warnings = ["worker stdout exceeded policy"];
-      if (!result.timedOut && result.exitCode === 0 && lastMessage?.trim()) {
-        return this.output(agentId, input.label, "completed", lastMessage, started, warnings.concat("used last-message fallback"), {
-          stdout: stdoutPath,
-          stderr: stderrPath,
-          lastMessage: lastMessagePath,
-        }, input, usage);
+    let resultSource: ResultSource = "none";
+    let finalResult: unknown = null;
+    let finalResultFindings: SafetyFinding[] = [];
+    if (!result.timedOut && result.exitCode === 0) {
+      if (lastMessage?.trim()) {
+        resultSource = "last_message";
+        const audited = sanitizeText("agent.result", lastMessage, { suppressOnSecret: true });
+        finalResult = audited.suppressed ? secretSentinel("agent.result", audited.findings) : audited.text;
+        finalResultFindings = audited.findings;
+      } else if (!stdoutOverflowed) {
+        resultSource = "events";
+        const audited = sanitizeValue("agent.result", extractFinalResult(parsed.events), { suppressOnSecret: true });
+        finalResult = audited.value;
+        finalResultFindings = audited.findings;
       }
-      return this.output(agentId, input.label, "failed", null, started, ["worker stdout exceeded policy"], {
-        stdout: stdoutPath,
-        stderr: stderrPath,
-      }, input, usage);
     }
 
-    await this.store.writeAgentText(agentId, "stdout.log", redactedStdout);
-    const events = redactValue(parsed.events);
-    await this.store.writeAgentJson(agentId, "events.json", events);
+    const allFindings = [
+      ...stdoutAudit.findings,
+      ...stderrAudit.findings,
+      ...lastMessageAudit.findings,
+      ...eventsAudit.findings,
+      ...finalResultFindings,
+    ];
+    const secretFindingKinds = findingKinds(allFindings);
+    const stdoutSuppressedForSecrets = stdoutAudit.suppressed || stderrAudit.suppressed || lastMessageAudit.suppressed || eventsAudit.suppressed;
+    const secretHit = secretFindingKinds.length > 0;
+    const persistFullOutputs = resolvedAuditMode === "full" && !secretHit;
+    const artifacts: Record<string, string> = {};
+
+    if (persistFullOutputs) {
+      artifacts.stderr = await this.store.writeAgentText(agentId, "stderr.log", stderrAudit.text);
+      artifacts.stdout = await this.store.writeAgentText(
+        agentId,
+        "stdout.log",
+        stdoutOverflowed ? truncateUtf8(stdoutAudit.text, this.policy.maxOutputBytesPerWorker) : stdoutAudit.text,
+      );
+      if (!stdoutOverflowed) {
+        artifacts.events = await this.store.writeAgentJson(agentId, "events.json", eventsAudit.value);
+      }
+      if (lastMessage !== undefined) {
+        artifacts.lastMessage = await this.store.writeAgentText(agentId, "last-message.txt", lastMessageAudit.text);
+      }
+    }
+
+    const validityReasons = [];
+    if (secretHit) validityReasons.push("secret-like worker output suppressed");
+    if (stdoutFallbackUsed) validityReasons.push("stdout exceeded policy and last-message fallback was used");
+    const validity: EvidenceValidity = secretHit ? "invalid" : stdoutFallbackUsed ? "diagnostic_only" : "valid";
+    const auditMetadata: AuditMetadata = {
+      outputAuditMode: this.policy.outputAuditMode,
+      resolvedOutputAuditMode: resolvedAuditMode,
+      auditCompleteness: persistFullOutputs ? auditCompletenessForMode(resolvedAuditMode) : resolvedAuditMode === "none" ? "none" : "metadata_only",
+      resultSource,
+      usageSource: usage ? "jsonl" : "none",
+      stdoutBytes: Buffer.byteLength(result.stdout),
+      stderrBytes: Buffer.byteLength(result.stderr),
+      stdoutSha256: sha256(result.stdout),
+      stderrSha256: sha256(result.stderr),
+      stdoutPersisted: !!artifacts.stdout,
+      stderrPersisted: !!artifacts.stderr,
+      lastMessagePersisted: !!artifacts.lastMessage,
+      eventsPersisted: !!artifacts.events,
+      stdoutOverflowed,
+      stdoutFallbackUsed,
+      stdoutSuppressedForSecrets,
+      secretFindingKinds,
+      eventsParsed: parsed.events.length,
+      validity,
+      validityReasons,
+    };
+    artifacts.captureMetadata = await this.store.writeAgentJson(agentId, "capture-metadata.json", auditMetadata);
+
+    const warnings = parsed.warnings.map((warning) => redactText(warning));
+    if (stdoutOverflowed) warnings.push("worker stdout exceeded policy");
+    if (stdoutFallbackUsed) warnings.push("used last-message fallback");
+    if (secretHit) warnings.push("worker output suppressed by artifact hygiene");
 
     if (result.timedOut) {
-      return this.output(agentId, input.label, "timed_out", null, started, parsed.warnings, {
-        stdout: stdoutPath,
-        stderr: stderrPath,
-      }, input, usage);
+      return this.output(agentId, input.label, "timed_out", null, started, warnings, artifacts, input, usage, auditMetadata);
     }
     if (result.exitCode !== 0) {
-      return this.output(agentId, input.label, "failed", null, started, parsed.warnings.concat(`exit ${result.exitCode}`), {
-        stdout: stdoutPath,
-        stderr: stderrPath,
-      }, input, usage);
+      return this.output(agentId, input.label, "failed", null, started, warnings.concat(`exit ${result.exitCode}`), artifacts, input, usage, auditMetadata);
     }
-
-    const finalResult = lastMessage?.trim() ? lastMessage : extractFinalResult(events);
-    return this.output(agentId, input.label, "completed", finalResult, started, parsed.warnings, {
-      stdout: stdoutPath,
-      stderr: stderrPath,
-      lastMessage: lastMessagePath,
-    }, input, usage);
+    if (stdoutOverflowed && !stdoutFallbackUsed) {
+      return this.output(agentId, input.label, "failed", null, started, warnings, artifacts, input, usage, auditMetadata);
+    }
+    if (secretHit) {
+      finalResult = secretSentinel("agent.result", allFindings);
+    }
+    return this.output(agentId, input.label, "completed", finalResult, started, warnings, artifacts, input, usage, auditMetadata);
   }
 
   private async workerEnv(agentId: string): Promise<WorkerEnvironment> {
@@ -194,6 +272,7 @@ export class CodexExecRunner {
     artifacts: Record<string, string>,
     input: AgentRunInput,
     usage: AgentRunOutput["usage"],
+    auditMetadata: AuditMetadata,
   ): AgentRunOutput {
     return {
       agentId,
@@ -205,7 +284,17 @@ export class CodexExecRunner {
       artifacts,
       model: input.options.model,
       reasoningEffort: input.options.reasoningEffort,
+      profile: input.options.profile,
       usage,
+      validity: auditMetadata.validity,
+      validityReasons: auditMetadata.validityReasons,
+      auditCompleteness: auditMetadata.auditCompleteness,
+      resultSource: auditMetadata.resultSource,
+      stdoutOverflowed: auditMetadata.stdoutOverflowed,
+      stdoutFallbackUsed: auditMetadata.stdoutFallbackUsed,
+      stdoutSuppressedForSecrets: auditMetadata.stdoutSuppressedForSecrets,
+      secretFindingKinds: auditMetadata.secretFindingKinds,
+      auditMetadata,
     };
   }
 }
@@ -251,12 +340,9 @@ function truncateUtf8(value: string, maxBytes: number): string {
   return `${buffer.subarray(0, Math.max(0, maxBytes)).toString("utf8")}${marker}`;
 }
 
-async function readAndRedactTextFile(path: string): Promise<string | undefined> {
+async function readTextFile(path: string): Promise<string | undefined> {
   try {
-    const raw = await readFile(path, "utf8");
-    const redacted = redactText(raw);
-    if (redacted !== raw) await writeFile(path, redacted, "utf8");
-    return redacted;
+    return await readFile(path, "utf8");
   } catch {
     return undefined;
   }

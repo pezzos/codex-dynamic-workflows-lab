@@ -8,7 +8,8 @@ tokens only where they improve the result.
 
 ## Current Status
 
-Version `0.1.6` implements the first measurable slice:
+Version `0.1.8` implements the first measurable routing and compaction slice plus
+artifact-output audit hardening:
 
 - per-worker usage parsing from Codex JSONL events;
 - run-level `aggregateUsage`, `usageUnavailableCount`, and budget status;
@@ -16,12 +17,23 @@ Version `0.1.6` implements the first measurable slice:
 - `budget.spent()` and `budget.remaining()` inside workflow scripts;
 - validated `reasoningEffort` routing through `codex exec -c
   model_reasoning_effort=...`;
-- artifact-visible `model` and `reasoningEffort` fields.
+- deterministic route profiles for `scout`, `reviewer`, `security`, and
+  `synthesizer`;
+- compact forwarding with closed schemas for scout maps, validation inventories,
+  review findings, and final synthesis;
+- artifact-visible `model`, `reasoningEffort`, and `profile` fields;
+- benchmark preflight and manifest helpers.
+- `outputAuditMode` and `capture-metadata.json` so authenticated worker output can be
+  metadata-only by default;
+- run and agent `validity` fields so contaminated or incomplete evidence is excluded
+  from cost/performance claims.
 
 The remaining problem is measurement quality across methods. Dynamic Workflow runs now
 produce usage data when Codex emits usage events, but the single-prompt and manual-role
 baselines still need the same timing and token instrumentation before strong cost claims
-are publishable.
+are publishable. The Hermes diagnostic campaign did not show a routed cost win and
+surfaced an artifact hygiene failure, so any cost claim must be rerun after the `0.1.8`
+output-audit changes.
 
 ## Original Problem
 
@@ -58,6 +70,12 @@ Token reduction must not weaken the lab's execution boundary.
   connectors, history, or raw worker transcripts across trust boundaries.
 - Redaction is not DLP. Any persisted cache or compressed context must pass a
   stronger artifact scan before it is reused.
+- A run with secret-like artifact findings is invalid for benchmark comparison even if
+  the worker process completed successfully.
+- Metadata-only output is acceptable for authenticated measured runs when the result
+  contract, usage data, and postflight artifact scan are clean. It reduces audit
+  completeness and must be recorded in the comparison, but it is not diagnostic-only by
+  itself.
 - Budget controls must be described as implemented behavior only after tests
   prove runtime enforcement.
 
@@ -109,7 +127,8 @@ Acceptance criteria:
 
 ## Phase 3 - Model And Reasoning Routing
 
-Status: first slice implemented in `0.1.6`; automatic role profiles remain future work.
+Status: explicit reasoning routing implemented in `0.1.6`; deterministic route
+profiles implemented in `0.1.7`.
 
 Implementation targets:
 
@@ -117,8 +136,7 @@ Implementation targets:
 - validate it against `minimal | low | medium | high`;
 - add policy allow-lists for models and reasoning levels;
 - pass reasoning to Codex only through a verified Codex CLI/config surface;
-- record model and reasoning in `command.json`, `result.json`, and
-  `summary.json`.
+- record model, reasoning, and profile in worker artifacts and events.
 
 Policy boundary:
 
@@ -137,8 +155,8 @@ Initial routing profiles:
 | Role | Model | Reasoning | Use |
 | --- | --- | --- | --- |
 | `scout` | caller-provided mini/cheap model | `low` | file mapping, grep-style exploration, simple summaries |
-| `focused-reviewer` | caller-provided default review model | `medium` | bounded read-only review |
-| `security-reviewer` | caller-provided stronger model | `high` | security or correctness-sensitive findings |
+| `reviewer` | caller-provided default review model | `medium` | bounded read-only review |
+| `security` | caller-provided stronger model | `high` | security or correctness-sensitive findings |
 | `synthesizer` | caller-provided stronger model | `high` | final synthesis and tradeoffs |
 
 Acceptance criteria:
@@ -149,6 +167,8 @@ Acceptance criteria:
 
 ## Phase 4 - Structured Output And Compression
 
+Status: first compact forwarding slice implemented in `0.1.7`.
+
 Reduce downstream context by separating audit artifacts from forwarded context.
 
 Implementation targets:
@@ -157,7 +177,7 @@ Implementation targets:
 - store full logs in artifacts;
 - forward only compact JSON summaries to synthesis steps;
 - add max summary length per worker;
-- add optional `compress(result)` helper or a built-in compression phase.
+- add `compact(value, schemaName, maxBytes)` helper with closed schemas.
 
 Acceptance criteria:
 
@@ -241,6 +261,10 @@ memory system.
 
 ## Phase 8 - Measurement Protocol
 
+Status: benchmark preflight, manifest, validity helpers, and postflight artifact
+scanning are implemented by `0.1.8`; automated four-method execution remains future
+work.
+
 Update the fresh-session test protocol to compare:
 
 - single prompt;
@@ -258,6 +282,8 @@ Required metrics:
 - number of workers launched;
 - number of workers skipped by budget;
 - number of cached workers;
+- process status versus evidence validity;
+- audit completeness and secret-suppression counts;
 - useful findings;
 - weak findings;
 - evidence count;
@@ -279,7 +305,12 @@ Start with the smallest slice that makes future decisions measurable:
 2. soft `maxTokens` - implemented in `0.1.6`;
 3. validated `reasoningEffort` - implemented in `0.1.6`;
 4. artifact-visible model/reasoning settings - implemented in `0.1.6`;
-5. one routed example workflow - implemented in `examples/routed-repo-review.workflow.js`.
+5. deterministic route profiles - implemented in `0.1.7`;
+6. compact forwarding - implemented in `0.1.7`;
+7. benchmark preflight/manifest/validity helpers - implemented in `0.1.7`;
+8. output audit mode, capture metadata, and postflight artifact scan - implemented in
+   `0.1.8`;
+9. one routed example workflow - implemented in `examples/routed-repo-review.workflow.js`.
 
 Do not start with UI, warm context, or worktree writes. Those are useful, but
 they do not solve the current measurement gap first.

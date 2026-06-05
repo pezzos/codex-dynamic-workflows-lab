@@ -2,9 +2,18 @@
 import { readFile, mkdir, writeFile } from "node:fs/promises";
 import { resolve, join } from "node:path";
 import { ArtifactStore } from "./artifacts.js";
+import {
+  createBenchmarkManifest,
+  postflightBenchmarkArtifacts,
+  preflightBenchmarkTarget,
+  type BenchmarkMethod,
+  type BenchmarkTargetMode,
+} from "./benchmark.js";
 import { CodexExecRunner } from "./codex-runner.js";
+import { safeErrorMessage, sanitizeForReturn } from "./hygiene.js";
 import { normalizePolicy } from "./policy.js";
 import { parseWorkflowScript, runWorkflow } from "./workflow.js";
+import type { RouteProfileId } from "./types.js";
 
 interface CliOptions {
   cwd: string;
@@ -25,7 +34,7 @@ async function main(): Promise<void> {
     const { workflowPath } = parseWorkflowPath(rest);
     const script = await readFile(workflowPath, "utf8");
     const parsed = parseWorkflowScript(script);
-    console.log(JSON.stringify({ ok: true, meta: parsed.meta }, null, 2));
+    printJson({ ok: true, meta: parsed.meta });
     return;
   }
 
@@ -46,7 +55,7 @@ async function main(): Promise<void> {
       codexBin: options.fake ? join(process.cwd(), "scripts", "fake-codex.js") : undefined,
     });
     const result = await runWorkflow(script, { cwd, artifactRoot, runId, args, policy, runner });
-    console.log(JSON.stringify(result, null, 2));
+    printJson(result);
     return;
   }
 
@@ -54,8 +63,8 @@ async function main(): Promise<void> {
     const runId = rest[0];
     if (!runId) throw new Error(`${command} requires runId`);
     const options = parseOptions(rest.slice(1));
-    const summary = await readFile(join(resolve(options.artifacts), "runs", runId, "summary.json"), "utf8");
-    console.log(summary);
+    const summary = JSON.parse(await readFile(join(resolve(options.artifacts), "runs", runId, "summary.json"), "utf8"));
+    printJson(summary);
     return;
   }
 
@@ -63,7 +72,50 @@ async function main(): Promise<void> {
     const runId = rest[0];
     if (!runId) throw new Error("artifacts requires runId");
     const options = parseOptions(rest.slice(1));
-    console.log(JSON.stringify({ runId, artifactRoot: join(resolve(options.artifacts), "runs", runId) }, null, 2));
+    printJson({ runId, artifactRoot: join(resolve(options.artifacts), "runs", runId) });
+    return;
+  }
+
+  if (command === "benchmark-preflight") {
+    const target = rest[0];
+    if (!target) throw new Error("benchmark-preflight requires target directory");
+    const options = parseBenchmarkOptions(rest.slice(1));
+    const result = await preflightBenchmarkTarget(target, options.targetMode);
+    printJson({ target: resolve(target), targetMode: options.targetMode, ...result });
+    if (!result.ok) process.exitCode = 2;
+    return;
+  }
+
+  if (command === "benchmark-manifest") {
+    const target = rest[0];
+    if (!target) throw new Error("benchmark-manifest requires target directory");
+    const options = parseBenchmarkOptions(rest.slice(1));
+    printJson(
+        createBenchmarkManifest({
+          campaignId: options.campaignId,
+          campaignFamilyId: options.campaignFamilyId,
+          cohortId: options.cohortId,
+          repeatIndex: options.repeatIndex,
+          fixtureId: options.fixtureId,
+          sanitizedFixtureHash: options.sanitizedFixtureHash,
+          targetStateHash: options.targetStateHash,
+          preflightStatus: options.preflightStatus,
+          target,
+          targetMode: options.targetMode,
+          method: options.method,
+          profiles: options.profiles,
+          notes: options.notes,
+        }),
+    );
+    return;
+  }
+
+  if (command === "benchmark-artifact-scan") {
+    const artifactRoot = rest[0];
+    if (!artifactRoot) throw new Error("benchmark-artifact-scan requires artifact root directory");
+    const result = await postflightBenchmarkArtifacts(artifactRoot);
+    printJson({ artifactRoot: resolve(artifactRoot), ...result });
+    if (!result.ok) process.exitCode = 2;
     return;
   }
 
@@ -74,7 +126,7 @@ async function main(): Promise<void> {
     const root = join(resolve(options.artifacts), "runs", runId);
     await mkdir(root, { recursive: true });
     await writeFile(join(root, "cancelled.json"), JSON.stringify({ runId, cancelledAt: new Date().toISOString() }, null, 2));
-    console.log(JSON.stringify({ runId, status: "cancel_requested" }, null, 2));
+    printJson({ runId, status: "cancel_requested" });
     return;
   }
 
@@ -114,6 +166,65 @@ function parseOptions(args: string[]): CliOptions {
   return options;
 }
 
+function parseBenchmarkOptions(args: string[]): {
+  campaignId: string;
+  campaignFamilyId?: string;
+  cohortId?: string;
+  repeatIndex?: number;
+  fixtureId?: string;
+  sanitizedFixtureHash?: string;
+  targetStateHash?: string;
+  preflightStatus?: "pass" | "failed" | "not_run";
+  targetMode: BenchmarkTargetMode;
+  method: BenchmarkMethod;
+  profiles: RouteProfileId[];
+  notes: string[];
+} {
+  const options = {
+    campaignId: "benchmark",
+    campaignFamilyId: undefined as string | undefined,
+    cohortId: undefined as string | undefined,
+    repeatIndex: undefined as number | undefined,
+    fixtureId: undefined as string | undefined,
+    sanitizedFixtureHash: undefined as string | undefined,
+    targetStateHash: undefined as string | undefined,
+    preflightStatus: undefined as "pass" | "failed" | "not_run" | undefined,
+    targetMode: "real_repo" as BenchmarkTargetMode,
+    method: "workflow-routed" as BenchmarkMethod,
+    profiles: [] as RouteProfileId[],
+    notes: [] as string[],
+  };
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index];
+    if (arg === "--campaign-id") options.campaignId = args[++index];
+    else if (arg === "--campaign-family-id") options.campaignFamilyId = args[++index];
+    else if (arg === "--cohort-id") options.cohortId = args[++index];
+    else if (arg === "--repeat-index") options.repeatIndex = Number(args[++index]);
+    else if (arg === "--fixture-id") options.fixtureId = args[++index];
+    else if (arg === "--sanitized-fixture-hash") options.sanitizedFixtureHash = args[++index];
+    else if (arg === "--target-state-hash") options.targetStateHash = args[++index];
+    else if (arg === "--preflight-status") options.preflightStatus = args[++index] as "pass" | "failed" | "not_run";
+    else if (arg === "--target-mode") options.targetMode = args[++index] as BenchmarkTargetMode;
+    else if (arg === "--method") options.method = args[++index] as BenchmarkMethod;
+    else if (arg === "--profile") options.profiles.push(args[++index] as RouteProfileId);
+    else if (arg === "--note") options.notes.push(args[++index]);
+    else throw new Error(`unsupported benchmark option: ${arg}`);
+  }
+  if (!["real_repo", "include_list", "sanitized_fixture"].includes(options.targetMode)) {
+    throw new Error("benchmark target mode must be real_repo, include_list, or sanitized_fixture");
+  }
+  if (!["single", "manual", "workflow-classic", "workflow-routed"].includes(options.method)) {
+    throw new Error("benchmark method must be single, manual, workflow-classic, or workflow-routed");
+  }
+  if (options.repeatIndex !== undefined && (!Number.isInteger(options.repeatIndex) || options.repeatIndex < 0)) {
+    throw new Error("benchmark repeat index must be a non-negative integer");
+  }
+  if (options.preflightStatus !== undefined && !["pass", "failed", "not_run"].includes(options.preflightStatus)) {
+    throw new Error("benchmark preflight status must be pass, failed, or not_run");
+  }
+  return options;
+}
+
 function printHelp(): void {
   console.log(`codex-flow
 
@@ -123,12 +234,19 @@ Usage:
   codex-flow status <runId> [--artifacts DIR]
   codex-flow result <runId> [--artifacts DIR]
   codex-flow artifacts <runId> [--artifacts DIR]
+  codex-flow benchmark-preflight <target-dir> [--target-mode real_repo|include_list|sanitized_fixture]
+  codex-flow benchmark-manifest <target-dir> [--campaign-id ID] [--campaign-family-id ID] [--cohort-id ID] [--repeat-index N] [--method single|manual|workflow-classic|workflow-routed] [--target-mode MODE] [--profile scout]
+  codex-flow benchmark-artifact-scan <artifact-run-dir>
   codex-flow cancel <runId> [--artifacts DIR]
   codex-flow server
 `);
 }
 
+function printJson(value: unknown): void {
+  console.log(JSON.stringify(sanitizeForReturn(value, "cli.stdout"), null, 2));
+}
+
 main().catch((error) => {
-  console.error(error instanceof Error ? error.message : String(error));
+  console.error(safeErrorMessage(error));
   process.exit(1);
 });

@@ -307,8 +307,8 @@ Workflows replacement.
   instrumentation, but any future performance article claim must still capture token
   usage per method and per worker.
 - `remaining_limits`: write-mode worktrees, process-tree termination, formal artifact DLP,
-  lower-noise worker output capture, repeat campaigns through the `0.1.6` detached
-  submit/poll contract, and strict timing/token accounting across all comparison methods.
+  lower-noise worker output capture, repeat campaigns through the detached submit/poll
+  contract, and strict timing/token accounting across all comparison methods.
 - `article_claim`: the defensible claim is now that Codex Dynamic Workflows Lab improves
   traceability and repeatability for bounded read-only multi-agent runs. Do not claim
   production-ready safety, lower cost, or general analysis superiority.
@@ -335,3 +335,125 @@ Workflows replacement.
   contracts.
 - `validation`: `npm run build` passed and synchronized the marketplace plugin bundle.
 - `version`: bumped package and plugin manifest to `0.1.6`.
+
+## Update 2026-06-04 - Routed profiles, compact forwarding, and benchmark harness
+
+- `status`: done
+- `issue`: the first token-control slice measured Dynamic Workflow usage and allowed
+  explicit reasoning settings, but it did not yet provide deterministic role profiles,
+  compact context forwarding, or a benchmark preflight/manifest contract for the next
+  measured campaign.
+- `fixes`: add deterministic route profiles `scout`, `reviewer`, `security`, and
+  `synthesizer`; expose `agent(..., { profile })`; resolve profile defaults before
+  worker launch; record profile metadata in events, command artifacts, and runner
+  results; add `compact(value, schemaName, maxBytes)` with closed schemas
+  `scout_map`, `validation_inventory`, `review_findings`, and `final_synthesis`; add a
+  fail-closed benchmark target preflight; add a benchmark manifest and run-validity
+  helpers; update the routed repo-review example to forward compact scout context into
+  reviewers.
+- `docs`: add compact forwarding, route profile, benchmark harness, common review
+  output contract, and routed quality-equivalence docs; update README, skill guidance,
+  fresh-session protocol, token roadmap, and Ultracode gap map.
+- `scope_note`: this still does not prove lower token cost or quality-equivalent routed
+  reviews. It creates the runtime primitives and campaign contracts needed to run that
+  proof.
+- `validation`: `npm run build` passed and synchronized the marketplace plugin bundle;
+  `node --test dist/tests/*.test.js` passed with 46 tests; `node scripts/validate-plugin.js`
+  passed; `node dist/src/cli.js validate examples/routed-repo-review.workflow.js`
+  passed; `node dist/src/cli.js run examples/routed-repo-review.workflow.js --fake
+  --artifacts /tmp/codex-flow-routed-smoke` passed with 4 fake workers, 2 compact
+  payloads, `aggregateUsage.totalTokens: 56`, and `usageUnavailableCount: 0`;
+  `node dist/src/cli.js benchmark-manifest . --campaign-id dwave-smoke --method
+  workflow-routed --profile scout --profile reviewer --profile security --profile
+  synthesizer` produced a manifest with profile hash
+  `d4c4e0257e186ed8c7f42705089197272fc28ce044e5cbf6bab7050c5c50de74`;
+  `node dist/src/cli.js benchmark-preflight . --target-mode real_repo` passed with
+  `ok: true`; `npm run pack:dry` passed for package `0.1.7`; root-vs-bundle diffs for
+  skills, docs, examples, assets, README, RESULTATS, package, plugin manifest, and MCP
+  config were clean.
+- `version`: bumped package, plugin manifest, and MCP server version to `0.1.7`.
+
+## Fix 2026-06-05 - Output audit hardening after Hermes diagnostic campaign
+
+- `status`: done
+- `input_report`: measured diagnostic campaign `dwave-2026-06-04-hermes` on
+  `/Users/alexandrepezzotta/repos/Hermes`.
+- `normal_findings`: routed workflows were traceable, but the diagnostic campaign did
+  not prove lower token cost. Method C classic and Method D routed were both very
+  expensive, and the routed retry was not a valid performance comparison because output
+  capture failed and a worker artifact contained a local API-key-shaped value.
+- `p0_incident`: one worker stdout artifact contained an exact local API-key-shaped
+  value. The value was observed in `agents/agent-007/stdout.log`, not in the summary,
+  compact payload, result JSON, or last-message fallback. This invalidated the run
+  family for timing/token rankings.
+- `fixes`: add `policy.outputAuditMode` with `auto`, `full`, `metadata-only`, and
+  `none`; resolve `auto` to `metadata-only` when `secrets: "codex-auth-only"` is used;
+  keep worker stdout/stderr/events in memory until audited; write Codex `-o`
+  last-message output to a temporary directory outside the artifact tree, then persist
+  only the audited copy when allowed; suppress secret-like worker output instead of
+  persisting it; write `capture-metadata.json` with byte counts, SHA-256 digests,
+  parsed-event count, usage source, result source, audit completeness, validity, and
+  finding kinds; sanitize MCP and CLI return envelopes; aggregate evidence validity in
+  workflow summaries.
+- `benchmark_update`: benchmark validity now treats secret-like artifact findings and
+  artifact leaks as `invalid`; `outputAuditMode: "none"` is diagnostic-only for
+  measured comparison; metadata-only evidence is allowed when result contract, usage
+  data, and postflight artifact scan are clean; manifests can record campaign family,
+  cohort, repeat index, fixture id, sanitized fixture hash, target state hash, and
+  preflight status; `benchmark-artifact-scan` provides a postflight scan for generated
+  artifact trees and fails closed on secret-like persisted values.
+- `tests`: added fake-worker regression coverage for secret-like stdout/stderr/events
+  and last-message output, temporary `-o` output outside artifact roots,
+  metadata-only authenticated capture, usage parsing under suppression, workflow
+  validity aggregation, postflight artifact scanning, and benchmark invalid/diagnostic
+  classification.
+- `validation`: `npm run check` passed with 49 tests and synchronized the marketplace
+  plugin bundle.
+- `article_claim`: the supported claim is traceability, repeatability, and now stronger
+  artifact-output hygiene. Do not claim lower token cost, production-ready secret
+  safety, or quality-equivalent routed performance until a clean same-cohort campaign
+  reruns after the incident response.
+- `operator_follow_up`: if the leaked Hermes value was real, rotate it and quarantine or
+  delete the affected artifact tree before running another public-facing campaign.
+- `version`: bumped package, plugin manifest, and MCP server version to `0.1.8`.
+
+## Fix 2026-06-05 - Practical preflight for real auth-heavy repositories
+
+- `status`: done
+- `issue`: after the `0.1.8` hardening, `benchmark-preflight` became too strict for
+  normal repositories such as Hermes. It blocked on `.env.example`, `.envrc`,
+  compiled Python cache files, redaction-pattern source code, and OAuth/API-key related
+  variable names even when those were code surfaces rather than leaked secrets.
+- `fixes`: target preflight now ignores common generated/cache directories and binary
+  cache extensions such as `__pycache__` and `.pyc`; `.env.example` and `.envrc` are
+  warnings, not blockers; source-level secret-pattern matches are informational
+  warnings; likely real secret-bearing paths such as `.env`, `.env.local`, `auth.json`,
+  and private-key files remain blockers.
+- `safety_boundary`: generated artifact scanning remains strict and fail-closed. The
+  relaxed behavior applies only to target preflight, where warnings are used to keep
+  real repos testable while still documenting sensitive surfaces.
+- `hermes_smoke`: `node dist/src/cli.js benchmark-preflight
+  /Users/alexandrepezzotta/repos/Hermes --target-mode real_repo` now returns
+  `ok: true`, `blockerCount: 0`, and warnings for the expected auth/redaction surfaces.
+- `tests`: added regression coverage for `.env` blockers, clean fixtures, auth-code
+  warnings, ignored `__pycache__`, and strict postflight artifact scanning.
+- `validation`: `npm run check` passed with 50 tests and synchronized the marketplace
+  plugin bundle.
+- `version`: bumped package, plugin manifest, and MCP server version to `0.1.9`.
+
+## Fix 2026-06-05 - Metadata-only benchmark classification
+
+- `status`: done
+- `issue`: reduced campaigns using `secrets: "codex-auth-only"` and
+  `outputAuditMode: "auto"` resolved to `metadata_only` audit completeness, then the
+  benchmark classifier marked the run `diagnostic_only` even when the workflow result
+  was valid, usage data was complete, and artifact postflight was clean.
+- `fix`: `metadata_only` audit completeness is no longer diagnostic-only by itself.
+  It remains a reduced audit-surface caveat that must be reported. `outputAuditMode:
+  "none"`, missing usage, stdout fallback, reconstructed contracts, secret findings,
+  and artifact leaks still downgrade or invalidate the comparison.
+- `tests`: added benchmark classifier coverage showing metadata-only with otherwise
+  clean evidence remains `valid`.
+- `validation`: pending final `npm run check`, `npm run plugin:validate`, and
+  `npm run pack:dry` for package `0.1.10`.
+- `version`: bumped package, plugin manifest, and MCP server version to `0.1.10`.

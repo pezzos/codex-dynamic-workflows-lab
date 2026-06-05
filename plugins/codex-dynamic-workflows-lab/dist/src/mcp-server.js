@@ -5,11 +5,13 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ArtifactStore } from "./artifacts.js";
 import { CodexExecRunner } from "./codex-runner.js";
+import { createArtifactHygiene, safeErrorMessage, sanitizeForReturn, sanitizeValue } from "./hygiene.js";
 import { normalizePolicy } from "./policy.js";
 import { redactText } from "./redaction.js";
+import { packageVersion } from "./version.js";
 import { parseWorkflowScript, runWorkflow } from "./workflow.js";
 const protocolVersion = "2025-06-18";
-const serverVersion = "0.1.5";
+const serverVersion = packageVersion;
 const entryPath = fileURLToPath(import.meta.url);
 export async function startMcpServer() {
     process.stdin.setEncoding("utf8");
@@ -35,8 +37,8 @@ async function handleLine(line) {
             send({ jsonrpc: "2.0", id: request.id, result });
     }
     catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        send({ jsonrpc: "2.0", id: JSON.parse(line).id ?? null, error: { code: -32000, message } });
+        const message = safeErrorMessage(error);
+        send({ jsonrpc: "2.0", id: safeRequestId(line), error: { code: -32000, message } });
     }
 }
 async function dispatch(request) {
@@ -122,7 +124,7 @@ async function callTool(name, args) {
         await mkdir(runRoot, { recursive: true });
         const jobPath = join(runRoot, "mcp-job.json");
         await writeStatus(runRoot, { runId, status: "submitted", meta: parsed.meta, artifactRoot: runRoot, startedAt: new Date().toISOString() });
-        await writeFile(jobPath, JSON.stringify({
+        const job = {
             script: String(args.script ?? ""),
             cwd,
             artifactRoot,
@@ -130,7 +132,12 @@ async function callTool(name, args) {
             args: args.args,
             policy,
             codexBin: args.codexBin,
-        }, null, 2), "utf8");
+        };
+        const safeJob = sanitizeValue("mcp.job", job, { suppressOnSecret: true });
+        if (safeJob.findings.length > 0) {
+            throw new Error(`workflow_submit rejected secret-like job payload: ${safeJob.secretFindingKinds.join(", ")}`);
+        }
+        await writeFile(jobPath, JSON.stringify(safeJob.value, null, 2), "utf8");
         const child = spawn(process.execPath, [entryPath, "--run-workflow-job", jobPath], {
             cwd,
             detached: true,
@@ -202,7 +209,7 @@ async function readStatus(runRoot) {
 }
 async function writeStatus(runRoot, status) {
     await mkdir(runRoot, { recursive: true });
-    await writeFile(join(runRoot, "status.json"), JSON.stringify(status, null, 2), "utf8");
+    await writeFile(join(runRoot, "status.json"), JSON.stringify(sanitizeForReturn(status, "mcp.status"), null, 2), "utf8");
 }
 async function runWorkflowJob(jobPath) {
     const job = JSON.parse(await readFile(jobPath, "utf8"));
@@ -210,7 +217,7 @@ async function runWorkflowJob(jobPath) {
     const runRoot = join(job.artifactRoot, "runs", job.runId);
     const startedAt = new Date().toISOString();
     await writeStatus(runRoot, { runId: job.runId, status: "running", meta: parsed.meta, artifactRoot: runRoot, startedAt });
-    const store = new ArtifactStore({ root: job.artifactRoot, runId: job.runId });
+    const store = new ArtifactStore({ root: job.artifactRoot, runId: job.runId, hygiene: createArtifactHygiene(job.policy) });
     const runner = new CodexExecRunner({ cwd: job.cwd, store, policy: job.policy, codexBin: job.codexBin });
     try {
         const result = await runWorkflow(job.script, {
@@ -237,7 +244,7 @@ async function runWorkflowJob(jobPath) {
 }
 async function writeFailureSummary(artifactRoot, runId, meta, error) {
     const runRoot = join(artifactRoot, "runs", runId);
-    const message = redactText(error instanceof Error ? error.message : String(error));
+    const message = redactText(safeErrorMessage(error));
     await mkdir(runRoot, { recursive: true });
     await writeStatus(runRoot, {
         runId,
@@ -247,7 +254,7 @@ async function writeFailureSummary(artifactRoot, runId, meta, error) {
         completedAt: new Date().toISOString(),
         warnings: [message],
     });
-    await writeFile(join(runRoot, "summary.json"), JSON.stringify({
+    await writeFile(join(runRoot, "summary.json"), JSON.stringify(sanitizeForReturn({
         runId,
         status: "failed",
         meta,
@@ -257,16 +264,26 @@ async function writeFailureSummary(artifactRoot, runId, meta, error) {
         durationMs: 0,
         warnings: [message],
         result: null,
-    }, null, 2), "utf8");
+    }, "mcp.failureSummary"), null, 2), "utf8");
 }
 function text(value) {
+    const safe = sanitizeForReturn(value, "mcp.return");
     return {
-        content: [{ type: "text", text: JSON.stringify(value, null, 2) }],
-        structuredContent: value,
+        content: [{ type: "text", text: JSON.stringify(safe, null, 2) }],
+        structuredContent: safe,
     };
 }
 function send(message) {
-    process.stdout.write(`${JSON.stringify(message)}\n`);
+    process.stdout.write(`${JSON.stringify(sanitizeForReturn(message, "mcp.jsonrpc"))}\n`);
+}
+function safeRequestId(line) {
+    try {
+        const parsed = JSON.parse(line);
+        return parsed.id ?? null;
+    }
+    catch {
+        return null;
+    }
 }
 if (import.meta.url === `file://${process.argv[1]}` && process.argv[2] === "--run-workflow-job") {
     const jobPath = process.argv[3];

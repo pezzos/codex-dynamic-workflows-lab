@@ -45,9 +45,24 @@ Supported low-cost routing options:
 - `model`: optional Codex model name, restricted by `policy.allowedModels` when set.
 - `reasoningEffort`: optional `minimal`, `low`, `medium`, or `high`, restricted by
   `policy.allowedReasoningEfforts` when set.
+- `profile`: optional `scout`, `reviewer`, `security`, or `synthesizer`, restricted by
+  `policy.allowedRouteProfiles` when set. Profiles fill a default reasoning effort
+  unless the workflow explicitly provides one.
+- `compact(value, schemaName, maxBytes)`: compact forwarded context using
+  `scout_map`, `validation_inventory`, `review_findings`, or `final_synthesis`.
 - `budget.remaining()` and `budget.spent()` are available inside the workflow. The
   `maxTokens` policy is a soft pre-spawn gate: it skips new workers after the budget is
   exhausted, but does not cancel workers already running.
+- `policy.outputAuditMode` supports `auto`, `full`, `metadata-only`, and `none`.
+  Prefer `auto`; it resolves to `metadata-only` when `secrets: "codex-auth-only"` is
+  used. Treat `none` as diagnostic-only and unsuitable for benchmark claims.
+- Read `validity`, `validityReasons`, `auditCompleteness`, `stdoutFallbackUsed`, and
+  `secretFindingKinds` before using a result in an article or comparison. Process
+  completion is not the same thing as evidence validity.
+- When a run has secret-like findings, do not quote raw artifacts. Report only finding
+  kinds and rotate any credential if the value may have been real.
+- Before using a run in a benchmark or article claim, run the artifact postflight scan
+  (`benchmark-artifact-scan` in the CLI) and require clean, valid evidence.
 
 ## Minimal Script
 
@@ -59,11 +74,17 @@ export const meta = {
 
 phase("Review")
 const findings = await parallel([
-  () => agent("Review architecture.", { label: "architecture" }),
-  () => agent("Review tests.", { label: "tests" }),
-  () => agent("Review security.", { label: "security" }),
+  () => agent("Review architecture.", { label: "architecture", profile: "reviewer" }),
+  () => agent("Review tests.", { label: "tests", profile: "reviewer" }),
+  () => agent("Review security.", { label: "security", profile: "security" }),
 ])
 
 phase("Synthesize")
-return { ok: true, findings }
+const synthesis = await compact({
+  summary: "Review complete.",
+  usefulFindings: findings.map((finding) => String(finding).slice(0, 300)),
+  weakFindings: [],
+  limits: "Inspect per-agent artifacts for full logs.",
+}, "final_synthesis", 4000)
+return { ok: true, synthesis }
 ```

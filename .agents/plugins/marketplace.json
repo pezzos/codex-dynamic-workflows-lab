@@ -8,7 +8,7 @@
       "name": "codex-dynamic-workflows-lab",
       "interface": {
         "displayName": "Codex Dynamic Workflows Lab",
-        "shortDescription": "Coordinate bounded local workflow runs"
+        "shortDescription": "Run bounded local Codex workflows"
       },
       "source": {
         "source": "local",

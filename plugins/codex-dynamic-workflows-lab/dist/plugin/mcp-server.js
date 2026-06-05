@@ -10,6 +10,45 @@ import { fileURLToPath } from "node:url";
 import { mkdir, readFile, writeFile, appendFile, lstat, realpath } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
+// src/profiles.ts
+var routeProfiles = Object.freeze({
+  scout: {
+    id: "scout",
+    reasoningEffort: "low",
+    description: "Cheap read-only map or inventory worker."
+  },
+  reviewer: {
+    id: "reviewer",
+    reasoningEffort: "medium",
+    description: "Focused bounded review worker."
+  },
+  security: {
+    id: "security",
+    reasoningEffort: "high",
+    description: "Higher-risk security or correctness worker."
+  },
+  synthesizer: {
+    id: "synthesizer",
+    reasoningEffort: "high",
+    description: "Final synthesis worker."
+  }
+});
+function routeProfileIds() {
+  return Object.keys(routeProfiles);
+}
+function resolveAgentProfile(options, policy) {
+  if (!options.profile) return options;
+  const profile = routeProfiles[options.profile];
+  if (!profile) throw new Error(`unsupported route profile: ${options.profile}`);
+  if (policy.allowedRouteProfiles.length > 0 && !policy.allowedRouteProfiles.includes(options.profile)) {
+    throw new Error(`route profile not allowed by policy: ${options.profile}`);
+  }
+  return {
+    ...options,
+    reasoningEffort: options.reasoningEffort ?? profile.reasoningEffort
+  };
+}
+
 // src/policy.ts
 var reasoningEfforts = ["minimal", "low", "medium", "high"];
 var defaultPolicy = Object.freeze({
@@ -30,7 +69,9 @@ var defaultPolicy = Object.freeze({
   allowedCommands: ["codex"],
   allowedModels: [],
   allowedReasoningEfforts: [],
-  secrets: "none"
+  allowedRouteProfiles: [],
+  secrets: "none",
+  outputAuditMode: "auto"
 });
 function normalizePolicy(input = {}) {
   const policy = { ...defaultPolicy, ...input };
@@ -57,6 +98,15 @@ function validatePolicy(policy) {
       throw new Error(`policy.allowedReasoningEfforts contains unsupported value: ${effort}`);
     }
   }
+  if (!Array.isArray(policy.allowedRouteProfiles)) {
+    throw new Error("policy.allowedRouteProfiles must be an array");
+  }
+  const profiles = routeProfileIds();
+  for (const profile of policy.allowedRouteProfiles) {
+    if (!profiles.includes(profile)) {
+      throw new Error(`policy.allowedRouteProfiles contains unsupported value: ${profile}`);
+    }
+  }
   if (policy.mode === "read-only" && policy.writableRoots.length > 0) {
     throw new Error("read-only policy cannot define writableRoots");
   }
@@ -65,6 +115,9 @@ function validatePolicy(policy) {
   }
   if (!["none", "codex-auth-only"].includes(policy.secrets)) {
     throw new Error("policy.secrets must be none or codex-auth-only");
+  }
+  if (!["auto", "full", "metadata-only", "none"].includes(policy.outputAuditMode)) {
+    throw new Error("policy.outputAuditMode must be auto, full, metadata-only, or none");
   }
 }
 function stablePolicyHash(policy) {
@@ -84,9 +137,11 @@ var ArtifactStore = class {
   runId;
   runRoot;
   agentsRoot;
+  hygiene;
   constructor(options) {
     this.root = resolve(options.root);
     this.runId = options.runId;
+    this.hygiene = options.hygiene;
     assertSafeId(options.runId, "runId");
     this.runRoot = join(this.root, "runs", options.runId);
     this.agentsRoot = join(this.runRoot, "agents");
@@ -109,7 +164,7 @@ var ArtifactStore = class {
   async initAgent(agentId, label, prompt) {
     const dir = this.agentDir(agentId);
     await mkdir(dir, { recursive: true });
-    await writeFile(join(dir, "prompt.md"), prompt, "utf8");
+    await writeFile(join(dir, "prompt.md"), this.safeText("agent.prompt", prompt), "utf8");
     await this.appendEvent({ type: "agent.created", runId: this.runId, agentId, label });
     return dir;
   }
@@ -118,7 +173,7 @@ var ArtifactStore = class {
     const dir = this.agentDir(agentId);
     await mkdir(dir, { recursive: true });
     const path = join(dir, file);
-    await writeFile(path, JSON.stringify(value, null, 2), "utf8");
+    await writeFile(path, JSON.stringify(this.safeValue(`agent.${file}`, value), null, 2), "utf8");
     return path;
   }
   async writeAgentText(agentId, file, value) {
@@ -126,19 +181,20 @@ var ArtifactStore = class {
     const dir = this.agentDir(agentId);
     await mkdir(dir, { recursive: true });
     const path = join(dir, file);
-    await writeFile(path, value, "utf8");
+    await writeFile(path, this.safeText(`agent.${file}`, value), "utf8");
     return path;
   }
   async appendEvent(event) {
     await mkdir(this.runRoot, { recursive: true });
-    await appendFile(join(this.runRoot, "events.jsonl"), `${JSON.stringify({ ...event, at: (/* @__PURE__ */ new Date()).toISOString() })}
+    const safeEvent = this.safeValue("events.jsonl", { ...event, at: (/* @__PURE__ */ new Date()).toISOString() });
+    await appendFile(join(this.runRoot, "events.jsonl"), `${JSON.stringify(ensureRecord(safeEvent))}
 `);
   }
   async writeJson(file, value) {
     assertSafeFilename(file);
     await mkdir(this.runRoot, { recursive: true });
     const path = join(this.runRoot, file);
-    await writeFile(path, JSON.stringify(value, null, 2), "utf8");
+    await writeFile(path, JSON.stringify(this.safeValue(file, value), null, 2), "utf8");
     return path;
   }
   async readJson(file) {
@@ -147,7 +203,17 @@ var ArtifactStore = class {
     await assertInsideRoot(path, this.runRoot);
     return JSON.parse(await readFile(path, "utf8"));
   }
+  safeText(surface, value) {
+    return this.hygiene?.sanitizeText(surface, value).text ?? value;
+  }
+  safeValue(surface, value) {
+    return this.hygiene?.sanitizeValue(surface, value).value ?? value;
+  }
 };
+function ensureRecord(value) {
+  if (value && typeof value === "object" && !Array.isArray(value)) return value;
+  return { type: "event.suppressed", value };
+}
 function assertSafeId(value, name) {
   if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(value)) {
     throw new Error(`${name} contains unsafe characters`);
@@ -183,22 +249,8 @@ import { chmod, copyFile, lstat as lstat2, mkdir as mkdir2, mkdtemp, readFile as
 import { homedir, tmpdir } from "node:os";
 import { resolve as resolve2, join as join2, sep } from "node:path";
 
-// src/jsonl.ts
-function parseNoisyJsonl(input) {
-  const events = [];
-  const warnings = [];
-  const lines = input.split(/\r?\n/);
-  for (const [index, raw] of lines.entries()) {
-    const line = raw.trim();
-    if (!line) continue;
-    try {
-      events.push(JSON.parse(line));
-    } catch {
-      warnings.push(`line ${index + 1}: non-json output ignored`);
-    }
-  }
-  return { events, warnings };
-}
+// src/hygiene.ts
+import { createHash } from "node:crypto";
 
 // src/redaction.ts
 var textRedactions = [
@@ -214,6 +266,154 @@ function redactValue(value) {
   if (Array.isArray(value)) return value.map((item) => redactValue(item));
   if (!value || typeof value !== "object") return value;
   return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, redactValue(item)]));
+}
+
+// src/safety.ts
+var exportablePatterns = [
+  ["private_key", /-----BEGIN [A-Z ]*PRIVATE KEY-----/i],
+  ["bearer_token", /bearer\s+[a-z0-9._~+/-]{20,}/i],
+  ["openai_key", /\bsk-[a-zA-Z0-9_-]{20,}\b/],
+  ["local_api_key", /\blocal_api_key_[a-zA-Z0-9_-]{12,}\b/i],
+  ["jwt", /\beyJ[a-zA-Z0-9_-]{8,}\.[a-zA-Z0-9_-]{8,}\.[a-zA-Z0-9_-]{8,}\b/],
+  [
+    "auth_json_token",
+    /"(access_token|refresh_token|id_token|api_key|token|secret)"\s*:\s*"[a-zA-Z0-9._~+/=-]{16,}"/i
+  ],
+  ["long_secret_assignment", /\b(api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret)\b\s*[:=]\s*["']?[a-z0-9._~+/-]{16,}/i]
+];
+function scanExportableValue(value) {
+  return scanExportableText(JSON.stringify(value));
+}
+function scanExportableText(text2, path) {
+  const findings = [];
+  for (const [kind, pattern] of exportablePatterns) {
+    if (pattern.test(text2)) findings.push({ kind, path, detail: `secret-like ${kind} pattern` });
+  }
+  return findings;
+}
+function assertExportableSafe(value) {
+  const findings = scanExportableValue(value);
+  if (findings.length > 0) {
+    throw new Error(`exportable payload failed secret preflight: ${findings.map((finding) => finding.kind).join(", ")}`);
+  }
+}
+
+// src/hygiene.ts
+function resolveOutputAuditMode(policy) {
+  if (policy.outputAuditMode === "auto") {
+    return policy.secrets === "codex-auth-only" ? "metadata-only" : "full";
+  }
+  return policy.outputAuditMode;
+}
+function auditCompletenessForMode(mode) {
+  if (mode === "metadata-only") return "metadata_only";
+  return mode;
+}
+function createArtifactHygiene(policy) {
+  const resolved = resolveOutputAuditMode(policy);
+  return {
+    sanitizeText(surface, value) {
+      return sanitizeText(surface, value, { suppressOnSecret: resolved !== "full" });
+    },
+    sanitizeValue(surface, value) {
+      return sanitizeValue(surface, value, { suppressOnSecret: resolved !== "full" });
+    }
+  };
+}
+function sanitizeText(surface, value, options = {}) {
+  const redacted = redactText(value);
+  const findings = mergeFindings(scanExportableText(value, surface), scanExportableText(redacted, surface));
+  const secretFindingKinds = findingKinds(findings);
+  if (findings.length > 0 && options.suppressOnSecret) {
+    return {
+      text: JSON.stringify(secretSentinel(surface, findings), null, 2),
+      findings,
+      secretFindingKinds,
+      suppressed: true
+    };
+  }
+  return {
+    text: findings.length > 0 ? JSON.stringify(secretSentinel(surface, findings), null, 2) : redacted,
+    findings,
+    secretFindingKinds,
+    suppressed: findings.length > 0
+  };
+}
+function sanitizeValue(surface, value, options = {}) {
+  const redacted = redactValue(value);
+  const findings = mergeFindings(scanExportableValue(value), scanExportableValue(redacted)).map((finding) => ({
+    ...finding,
+    path: finding.path ?? surface
+  }));
+  const secretFindingKinds = findingKinds(findings);
+  if (findings.length > 0 && options.suppressOnSecret) {
+    return {
+      value: secretSentinel(surface, findings),
+      findings,
+      secretFindingKinds,
+      suppressed: true
+    };
+  }
+  return {
+    value: findings.length > 0 ? secretSentinel(surface, findings) : redacted,
+    findings,
+    secretFindingKinds,
+    suppressed: findings.length > 0
+  };
+}
+function sanitizeForReturn(value, surface = "return") {
+  return sanitizeValue(surface, value, { suppressOnSecret: true }).value;
+}
+function safeErrorMessage(error) {
+  const message = error instanceof Error ? error.message : String(error);
+  return sanitizeText("error", message, { suppressOnSecret: true }).text;
+}
+function sha256(value) {
+  return createHash("sha256").update(value).digest("hex");
+}
+function findingKinds(findings) {
+  return [...new Set(findings.map((finding) => finding.kind))].sort();
+}
+function secretSentinel(surface, findings) {
+  return {
+    suppressed: true,
+    reason: "secret_like_content",
+    surface,
+    findingKinds: findingKinds(findings)
+  };
+}
+function mergeValidity(values) {
+  if (values.includes("invalid")) return "invalid";
+  if (values.includes("diagnostic_only")) return "diagnostic_only";
+  return "valid";
+}
+function mergeFindings(...groups) {
+  const seen = /* @__PURE__ */ new Set();
+  const merged = [];
+  for (const finding of groups.flat()) {
+    const key = `${finding.kind}:${finding.path ?? ""}:${finding.detail}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push(finding);
+  }
+  return merged;
+}
+
+// src/jsonl.ts
+function parseNoisyJsonl(input) {
+  const events = [];
+  const warnings = [];
+  const lines = input.split(/\r?\n/);
+  for (const [index, raw] of lines.entries()) {
+    const line = raw.trim();
+    if (!line) continue;
+    try {
+      events.push(JSON.parse(line));
+    } catch {
+      warnings.push(`line ${index + 1}: non-json output ignored`);
+    }
+  }
+  return { events, warnings };
 }
 
 // src/usage.ts
@@ -285,9 +485,8 @@ var CodexExecRunner = class {
   async run(input) {
     const started = Date.now();
     const agentId = input.agentId ?? `codex-${String(++this.count).padStart(3, "0")}`;
-    const agentDir = await this.store.initAgent(agentId, input.label, input.prompt);
+    await this.store.initAgent(agentId, input.label, input.prompt);
     const schemaPath = input.schema ? await this.store.writeAgentJson(agentId, "schema.json", input.schema) : void 0;
-    const lastMessagePath = join2(agentDir, "last-message.txt");
     const sandbox = input.options.sandbox ?? (this.policy.mode === "read-only" ? "read-only" : "workspace-write");
     if (sandbox === "workspace-write" && this.policy.mode !== "write-worktree") {
       throw new Error("workspace-write worker rejected by read-only policy");
@@ -301,6 +500,12 @@ var CodexExecRunner = class {
     if (input.options.reasoningEffort && !reasoningEfforts.includes(input.options.reasoningEffort)) {
       throw new Error(`unsupported reasoning effort: ${input.options.reasoningEffort}`);
     }
+    if (input.options.profile && !routeProfileIds().includes(input.options.profile)) {
+      throw new Error(`unsupported route profile: ${input.options.profile}`);
+    }
+    if (input.options.profile && this.policy.allowedRouteProfiles.length > 0 && !this.policy.allowedRouteProfiles.includes(input.options.profile)) {
+      throw new Error(`route profile not allowed by policy: ${input.options.profile}`);
+    }
     if (input.options.reasoningEffort && this.policy.allowedReasoningEfforts.length > 0 && !this.policy.allowedReasoningEfforts.includes(input.options.reasoningEffort)) {
       throw new Error(`reasoning effort not allowed by policy: ${input.options.reasoningEffort}`);
     }
@@ -310,6 +515,8 @@ var CodexExecRunner = class {
         throw new Error("worker cwd is outside policy writableRoots");
       }
     }
+    const lastMessageDir = await mkdtemp(join2(tmpdir(), `codex-flow-last-message-${agentId}-`));
+    const lastMessagePath = join2(lastMessageDir, "last-message.txt");
     const args = [
       "--ask-for-approval",
       "never",
@@ -333,7 +540,8 @@ var CodexExecRunner = class {
       cwd: this.cwd,
       sandbox,
       model: input.options.model,
-      reasoningEffort: input.options.reasoningEffort
+      reasoningEffort: input.options.reasoningEffort,
+      profile: input.options.profile
     });
     const worker = await this.workerEnv(agentId);
     const timeoutMs = input.options.timeoutMs ?? this.policy.maxWorkerDurationMs;
@@ -350,50 +558,103 @@ var CodexExecRunner = class {
     } finally {
       await cleanupWorkerTempDirs(worker.tempDirs);
     }
-    const redactedStdout = redactText(result.stdout);
-    const redactedStderr = redactText(result.stderr);
-    const parsed = parseNoisyJsonl(redactedStdout);
+    const resolvedAuditMode = resolveOutputAuditMode(this.policy);
+    const parsed = parseNoisyJsonl(result.stdout);
     const usage = latestUsageFromEvents(parsed.events);
-    const lastMessage = await readAndRedactTextFile(lastMessagePath);
-    const stdoutPath = join2(agentDir, "stdout.log");
-    const stderrPath = join2(agentDir, "stderr.log");
-    await this.store.writeAgentText(agentId, "stderr.log", redactedStderr);
-    if (Buffer.byteLength(redactedStdout) > this.policy.maxOutputBytesPerWorker) {
-      await this.store.writeAgentText(agentId, "stdout.log", truncateUtf8(redactedStdout, this.policy.maxOutputBytesPerWorker));
-      const warnings = ["worker stdout exceeded policy"];
-      if (!result.timedOut && result.exitCode === 0 && lastMessage?.trim()) {
-        return this.output(agentId, input.label, "completed", lastMessage, started, warnings.concat("used last-message fallback"), {
-          stdout: stdoutPath,
-          stderr: stderrPath,
-          lastMessage: lastMessagePath
-        }, input, usage);
+    const lastMessage = await readTextFile(lastMessagePath);
+    await rm(lastMessageDir, { recursive: true, force: true, maxRetries: 2 }).catch(() => void 0);
+    const stdoutOverflowed = Buffer.byteLength(result.stdout) > this.policy.maxOutputBytesPerWorker;
+    const stdoutFallbackUsed = stdoutOverflowed && !result.timedOut && result.exitCode === 0 && !!lastMessage?.trim();
+    const stdoutAudit = sanitizeText("agent.stdout", result.stdout, { suppressOnSecret: true });
+    const stderrAudit = sanitizeText("agent.stderr", result.stderr, { suppressOnSecret: true });
+    const lastMessageAudit = sanitizeText("agent.lastMessage", lastMessage ?? "", { suppressOnSecret: true });
+    const eventsAudit = sanitizeValue("agent.events", parsed.events, { suppressOnSecret: true });
+    let resultSource = "none";
+    let finalResult = null;
+    let finalResultFindings = [];
+    if (!result.timedOut && result.exitCode === 0) {
+      if (lastMessage?.trim()) {
+        resultSource = "last_message";
+        const audited = sanitizeText("agent.result", lastMessage, { suppressOnSecret: true });
+        finalResult = audited.suppressed ? secretSentinel("agent.result", audited.findings) : audited.text;
+        finalResultFindings = audited.findings;
+      } else if (!stdoutOverflowed) {
+        resultSource = "events";
+        const audited = sanitizeValue("agent.result", extractFinalResult(parsed.events), { suppressOnSecret: true });
+        finalResult = audited.value;
+        finalResultFindings = audited.findings;
       }
-      return this.output(agentId, input.label, "failed", null, started, ["worker stdout exceeded policy"], {
-        stdout: stdoutPath,
-        stderr: stderrPath
-      }, input, usage);
     }
-    await this.store.writeAgentText(agentId, "stdout.log", redactedStdout);
-    const events = redactValue(parsed.events);
-    await this.store.writeAgentJson(agentId, "events.json", events);
+    const allFindings = [
+      ...stdoutAudit.findings,
+      ...stderrAudit.findings,
+      ...lastMessageAudit.findings,
+      ...eventsAudit.findings,
+      ...finalResultFindings
+    ];
+    const secretFindingKinds = findingKinds(allFindings);
+    const stdoutSuppressedForSecrets = stdoutAudit.suppressed || stderrAudit.suppressed || lastMessageAudit.suppressed || eventsAudit.suppressed;
+    const secretHit = secretFindingKinds.length > 0;
+    const persistFullOutputs = resolvedAuditMode === "full" && !secretHit;
+    const artifacts = {};
+    if (persistFullOutputs) {
+      artifacts.stderr = await this.store.writeAgentText(agentId, "stderr.log", stderrAudit.text);
+      artifacts.stdout = await this.store.writeAgentText(
+        agentId,
+        "stdout.log",
+        stdoutOverflowed ? truncateUtf8(stdoutAudit.text, this.policy.maxOutputBytesPerWorker) : stdoutAudit.text
+      );
+      if (!stdoutOverflowed) {
+        artifacts.events = await this.store.writeAgentJson(agentId, "events.json", eventsAudit.value);
+      }
+      if (lastMessage !== void 0) {
+        artifacts.lastMessage = await this.store.writeAgentText(agentId, "last-message.txt", lastMessageAudit.text);
+      }
+    }
+    const validityReasons = [];
+    if (secretHit) validityReasons.push("secret-like worker output suppressed");
+    if (stdoutFallbackUsed) validityReasons.push("stdout exceeded policy and last-message fallback was used");
+    const validity = secretHit ? "invalid" : stdoutFallbackUsed ? "diagnostic_only" : "valid";
+    const auditMetadata = {
+      outputAuditMode: this.policy.outputAuditMode,
+      resolvedOutputAuditMode: resolvedAuditMode,
+      auditCompleteness: persistFullOutputs ? auditCompletenessForMode(resolvedAuditMode) : resolvedAuditMode === "none" ? "none" : "metadata_only",
+      resultSource,
+      usageSource: usage ? "jsonl" : "none",
+      stdoutBytes: Buffer.byteLength(result.stdout),
+      stderrBytes: Buffer.byteLength(result.stderr),
+      stdoutSha256: sha256(result.stdout),
+      stderrSha256: sha256(result.stderr),
+      stdoutPersisted: !!artifacts.stdout,
+      stderrPersisted: !!artifacts.stderr,
+      lastMessagePersisted: !!artifacts.lastMessage,
+      eventsPersisted: !!artifacts.events,
+      stdoutOverflowed,
+      stdoutFallbackUsed,
+      stdoutSuppressedForSecrets,
+      secretFindingKinds,
+      eventsParsed: parsed.events.length,
+      validity,
+      validityReasons
+    };
+    artifacts.captureMetadata = await this.store.writeAgentJson(agentId, "capture-metadata.json", auditMetadata);
+    const warnings = parsed.warnings.map((warning) => redactText(warning));
+    if (stdoutOverflowed) warnings.push("worker stdout exceeded policy");
+    if (stdoutFallbackUsed) warnings.push("used last-message fallback");
+    if (secretHit) warnings.push("worker output suppressed by artifact hygiene");
     if (result.timedOut) {
-      return this.output(agentId, input.label, "timed_out", null, started, parsed.warnings, {
-        stdout: stdoutPath,
-        stderr: stderrPath
-      }, input, usage);
+      return this.output(agentId, input.label, "timed_out", null, started, warnings, artifacts, input, usage, auditMetadata);
     }
     if (result.exitCode !== 0) {
-      return this.output(agentId, input.label, "failed", null, started, parsed.warnings.concat(`exit ${result.exitCode}`), {
-        stdout: stdoutPath,
-        stderr: stderrPath
-      }, input, usage);
+      return this.output(agentId, input.label, "failed", null, started, warnings.concat(`exit ${result.exitCode}`), artifacts, input, usage, auditMetadata);
     }
-    const finalResult = lastMessage?.trim() ? lastMessage : extractFinalResult(events);
-    return this.output(agentId, input.label, "completed", finalResult, started, parsed.warnings, {
-      stdout: stdoutPath,
-      stderr: stderrPath,
-      lastMessage: lastMessagePath
-    }, input, usage);
+    if (stdoutOverflowed && !stdoutFallbackUsed) {
+      return this.output(agentId, input.label, "failed", null, started, warnings, artifacts, input, usage, auditMetadata);
+    }
+    if (secretHit) {
+      finalResult = secretSentinel("agent.result", allFindings);
+    }
+    return this.output(agentId, input.label, "completed", finalResult, started, warnings, artifacts, input, usage, auditMetadata);
   }
   async workerEnv(agentId) {
     const home = await mkdtemp(join2(tmpdir(), `codex-flow-home-${agentId}-`));
@@ -419,7 +680,7 @@ var CodexExecRunner = class {
       throw error;
     }
   }
-  output(agentId, label, status, result, started, warnings, artifacts, input, usage) {
+  output(agentId, label, status, result, started, warnings, artifacts, input, usage, auditMetadata) {
     return {
       agentId,
       label,
@@ -430,7 +691,17 @@ var CodexExecRunner = class {
       artifacts,
       model: input.options.model,
       reasoningEffort: input.options.reasoningEffort,
-      usage
+      profile: input.options.profile,
+      usage,
+      validity: auditMetadata.validity,
+      validityReasons: auditMetadata.validityReasons,
+      auditCompleteness: auditMetadata.auditCompleteness,
+      resultSource: auditMetadata.resultSource,
+      stdoutOverflowed: auditMetadata.stdoutOverflowed,
+      stdoutFallbackUsed: auditMetadata.stdoutFallbackUsed,
+      stdoutSuppressedForSecrets: auditMetadata.stdoutSuppressedForSecrets,
+      secretFindingKinds: auditMetadata.secretFindingKinds,
+      auditMetadata
     };
   }
 };
@@ -466,12 +737,9 @@ function truncateUtf8(value, maxBytes) {
   const marker = "\n[truncated: worker stdout exceeded policy]\n";
   return `${buffer.subarray(0, Math.max(0, maxBytes)).toString("utf8")}${marker}`;
 }
-async function readAndRedactTextFile(path) {
+async function readTextFile(path) {
   try {
-    const raw = await readFile2(path, "utf8");
-    const redacted = redactText(raw);
-    if (redacted !== raw) await writeFile2(path, redacted, "utf8");
-    return redacted;
+    return await readFile2(path, "utf8");
   } catch {
     return void 0;
   }
@@ -527,6 +795,9 @@ function extractFinalResult(events) {
   }
   return redactValue(events.at(-1) ?? "");
 }
+
+// src/version.ts
+var packageVersion = "0.1.10";
 
 // src/workflow.ts
 import vm from "node:vm";
@@ -6182,6 +6453,133 @@ function parse3(input, options) {
   return Parser.parse(input, options);
 }
 
+// src/compact.ts
+var schemaNames = ["scout_map", "validation_inventory", "review_findings", "final_synthesis"];
+function compactSchemaNames() {
+  return [...schemaNames];
+}
+function compactValue(value, schemaName, maxBytes) {
+  if (!schemaNames.includes(schemaName)) throw new Error(`unsupported compact schema: ${schemaName}`);
+  if (!Number.isInteger(maxBytes) || maxBytes < 256 || maxBytes > 64e3) {
+    throw new Error("compact maxBytes must be an integer between 256 and 64000");
+  }
+  const redacted = redactValue(value);
+  const normalized = normalizeBySchema(redacted, schemaName);
+  assertExportableSafe(normalized);
+  const byteLength = Buffer.byteLength(JSON.stringify(normalized));
+  if (byteLength > maxBytes) throw new Error(`compact payload exceeds maxBytes (${byteLength} > ${maxBytes})`);
+  return { schemaName, maxBytes, byteLength, value: normalized };
+}
+function normalizeBySchema(value, schemaName) {
+  switch (schemaName) {
+    case "scout_map":
+      return normalizeScoutMap(value);
+    case "validation_inventory":
+      return normalizeValidationInventory(value);
+    case "review_findings":
+      return normalizeReviewFindings(value);
+    case "final_synthesis":
+      return normalizeFinalSynthesis(value);
+  }
+}
+function normalizeScoutMap(value) {
+  const object = requireObject(value, "scout_map");
+  return {
+    summary: shortString(object.summary, "summary", 600),
+    files: arrayOf(object.files, "files", 20, (item) => {
+      const file = requireObject(item, "files[]");
+      return {
+        path: safePath(file.path, "files[].path"),
+        why: shortString(file.why, "files[].why", 300)
+      };
+    }),
+    limits: optionalShortString(object.limits, "limits", 500) ?? ""
+  };
+}
+function normalizeValidationInventory(value) {
+  const object = requireObject(value, "validation_inventory");
+  return {
+    commands: arrayOf(object.commands, "commands", 20, (item) => {
+      const command = requireObject(item, "commands[]");
+      return {
+        command: shortString(command.command, "commands[].command", 220),
+        purpose: shortString(command.purpose, "commands[].purpose", 300),
+        evidence: shortString(command.evidence, "commands[].evidence", 300)
+      };
+    }),
+    gaps: arrayOf(object.gaps ?? [], "gaps", 10, (item) => shortString(item, "gaps[]", 300))
+  };
+}
+function normalizeReviewFindings(value) {
+  const object = requireObject(value, "review_findings");
+  return {
+    findings: arrayOf(object.findings, "findings", 10, (item) => {
+      const finding = requireObject(item, "findings[]");
+      return {
+        area: shortString(finding.area, "findings[].area", 80),
+        severity: enumString(finding.severity, "findings[].severity", ["low", "medium", "high", "critical"]),
+        confidence: enumString(finding.confidence, "findings[].confidence", ["low", "medium", "high"]),
+        summary: shortString(finding.summary, "findings[].summary", 600),
+        evidenceRefs: arrayOf(finding.evidenceRefs, "findings[].evidenceRefs", 5, (ref2) => {
+          const evidence = requireObject(ref2, "evidenceRefs[]");
+          return {
+            file: safePath(evidence.file, "evidenceRefs[].file"),
+            line: optionalInteger(evidence.line, "evidenceRefs[].line") ?? null,
+            note: optionalShortString(evidence.note, "evidenceRefs[].note", 220) ?? ""
+          };
+        }),
+        actionability: shortString(finding.actionability, "findings[].actionability", 300),
+        needsVerification: Boolean(finding.needsVerification),
+        weak: Boolean(finding.weak)
+      };
+    })
+  };
+}
+function normalizeFinalSynthesis(value) {
+  const object = requireObject(value, "final_synthesis");
+  return {
+    summary: shortString(object.summary, "summary", 900),
+    usefulFindings: arrayOf(object.usefulFindings, "usefulFindings", 10, (item) => shortString(item, "usefulFindings[]", 400)),
+    weakFindings: arrayOf(object.weakFindings ?? [], "weakFindings", 10, (item) => shortString(item, "weakFindings[]", 300)),
+    limits: optionalShortString(object.limits, "limits", 600) ?? ""
+  };
+}
+function requireObject(value, name) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${name} must be an object`);
+  return value;
+}
+function shortString(value, name, maxLength) {
+  if (typeof value !== "string" || value.length === 0) throw new Error(`${name} must be a non-empty string`);
+  if (value.length > maxLength) throw new Error(`${name} exceeds ${maxLength} characters`);
+  if (/raw_output|base64|BEGIN [A-Z ]*PRIVATE KEY/i.test(value)) throw new Error(`${name} contains forbidden exportable content`);
+  return value;
+}
+function optionalShortString(value, name, maxLength) {
+  if (value === void 0 || value === null) return void 0;
+  return shortString(value, name, maxLength);
+}
+function safePath(value, name) {
+  const path = shortString(value, name, 240);
+  if (path.startsWith("/") || path.includes("..") || /(^|\/)(auth\.json|\.env)/i.test(path)) {
+    throw new Error(`${name} must be a relative non-secret path`);
+  }
+  return path;
+}
+function optionalInteger(value, name) {
+  if (value === void 0 || value === null) return void 0;
+  if (!Number.isInteger(value) || Number(value) < 1) throw new Error(`${name} must be a positive integer`);
+  return Number(value);
+}
+function enumString(value, name, values) {
+  if (typeof value !== "string" || !values.includes(value)) throw new Error(`${name} must be one of ${values.join(", ")}`);
+  return value;
+}
+function arrayOf(value, name, maxLength, mapper) {
+  if (!Array.isArray(value)) throw new Error(`${name} must be an array`);
+  if (value.length > maxLength) throw new Error(`${name} exceeds ${maxLength} items`);
+  return value.map(mapper);
+}
+
 // src/workflow.ts
 var agentOptionKeys = /* @__PURE__ */ new Set([
   "label",
@@ -6189,6 +6587,7 @@ var agentOptionKeys = /* @__PURE__ */ new Set([
   "schema",
   "model",
   "reasoningEffort",
+  "profile",
   "sandbox",
   "writeScope",
   "timeoutMs"
@@ -6227,7 +6626,8 @@ async function runWorkflow(script, options) {
   const policy = normalizePolicy(options.policy);
   const store = new ArtifactStore({
     root: options.artifactRoot ?? `${options.cwd}/.codex-workflows`,
-    runId
+    runId,
+    hygiene: createArtifactHygiene(policy)
   });
   await store.init(meta, policy);
   const state = {
@@ -6236,7 +6636,16 @@ async function runWorkflow(script, options) {
     agentCount: 0,
     warnings: [],
     aggregateUsage: emptyUsage(),
-    usageUnavailableCount: 0
+    usageUnavailableCount: 0,
+    compactCount: 0,
+    agentValidities: [],
+    validityReasons: [],
+    stdoutFallbackUsedCount: 0,
+    secretSafeSuppressionCount: 0,
+    metadataOnlyAuditCount: 0,
+    artifactSecretFindingCount: 0,
+    invalidAgentCount: 0,
+    diagnosticAgentCount: 0
   };
   const limiter = createLimiter(policy.concurrency);
   const pending = /* @__PURE__ */ new Set();
@@ -6268,7 +6677,7 @@ async function runWorkflow(script, options) {
   const agent = async (prompt, rawOptions = {}) => {
     throwIfAborted();
     const agentPrompt = requireString(prompt, "agent prompt");
-    const agentOptions = normalizeAgentOptions(rawOptions);
+    const agentOptions = resolveAgentProfile(normalizeAgentOptions(rawOptions), policy);
     if (agentOptions.sandbox === "workspace-write" && policy.mode !== "write-worktree") {
       throw new Error("worker requested writes but workflow policy is read-only");
     }
@@ -6291,6 +6700,17 @@ async function runWorkflow(script, options) {
     const run = limiter(async () => {
       throwIfAborted();
       await store.initAgent(agentId, label, agentPrompt);
+      if (agentOptions.profile) {
+        await store.appendEvent({
+          type: "agent.profile",
+          runId,
+          agentId,
+          label,
+          profile: agentOptions.profile,
+          model: agentOptions.model ?? null,
+          reasoningEffort: agentOptions.reasoningEffort ?? null
+        });
+      }
       await store.appendEvent({ type: "agent.started", runId, agentId, label, phase: assignedPhase });
       try {
         const result2 = await options.runner.run({
@@ -6301,12 +6721,33 @@ async function runWorkflow(script, options) {
           schema: agentOptions.schema,
           options: { ...agentOptions, timeoutMs: agentOptions.timeoutMs ?? policy.maxWorkerDurationMs }
         });
-        const safeResult = redactValue(result2);
+        const sanitizedAgentResult = sanitizeValue("agent.result", result2.result, { suppressOnSecret: true });
+        const localSecretKinds = findingKinds(sanitizedAgentResult.findings);
+        const agentSecretKinds = [.../* @__PURE__ */ new Set([...result2.secretFindingKinds ?? [], ...localSecretKinds])].sort();
+        const agentValidity = agentSecretKinds.length > 0 ? "invalid" : result2.validity ?? (result2.stdoutFallbackUsed ? "diagnostic_only" : "valid");
+        const safeResult = {
+          ...redactValue(result2),
+          result: sanitizedAgentResult.value,
+          validity: agentValidity,
+          validityReasons: [
+            ...result2.validityReasons ?? [],
+            ...agentSecretKinds.length > 0 ? ["secret-like agent result suppressed"] : []
+          ],
+          secretFindingKinds: agentSecretKinds
+        };
         if (result2.usage) {
           state.aggregateUsage = addUsage(state.aggregateUsage, result2.usage);
         } else {
           state.usageUnavailableCount++;
         }
+        state.agentValidities.push(agentValidity);
+        state.validityReasons.push(...safeResult.validityReasons ?? []);
+        if (safeResult.stdoutFallbackUsed) state.stdoutFallbackUsedCount++;
+        if (safeResult.stdoutSuppressedForSecrets || agentSecretKinds.length > 0) state.secretSafeSuppressionCount++;
+        if (safeResult.auditCompleteness === "metadata_only") state.metadataOnlyAuditCount++;
+        if (agentSecretKinds.length > 0) state.artifactSecretFindingCount += agentSecretKinds.length;
+        if (agentValidity === "invalid") state.invalidAgentCount++;
+        if (agentValidity === "diagnostic_only") state.diagnosticAgentCount++;
         await store.writeAgentJson(agentId, "result.json", safeResult);
         await store.appendEvent({
           type: "agent.completed",
@@ -6314,6 +6755,7 @@ async function runWorkflow(script, options) {
           agentId,
           label,
           status: safeResult.status,
+          validity: safeResult.validity,
           usage: result2.usage ?? null
         });
         state.warnings.push(...safeResult.warnings.map((warning) => redactText(warning)));
@@ -6328,6 +6770,22 @@ async function runWorkflow(script, options) {
     pending.add(run);
     run.finally(() => pending.delete(run));
     return run;
+  };
+  const compact = async (value, schemaName, maxBytes = 4e3) => {
+    throwIfAborted();
+    const payload = compactValue(value, requireCompactSchemaName(schemaName), requireCompactMaxBytes(maxBytes));
+    state.compactCount++;
+    const file = `compact-${String(state.compactCount).padStart(3, "0")}.json`;
+    await store.writeJson(file, payload);
+    await store.appendEvent({
+      type: "compact.created",
+      runId,
+      file,
+      schemaName: payload.schemaName,
+      byteLength: payload.byteLength,
+      maxBytes: payload.maxBytes
+    });
+    return payload;
   };
   const parallel = async (thunks) => {
     throwIfAborted();
@@ -6354,6 +6812,7 @@ async function runWorkflow(script, options) {
       pipeline,
       phase,
       log,
+      compact,
       args: options.args,
       cwd: options.cwd,
       process: Object.freeze({ cwd: () => options.cwd }),
@@ -6386,10 +6845,20 @@ ${body}
     filename: `${meta.name}.workflow.js`
   }).runInContext(context, { timeout: 1e3 });
   await Promise.allSettled([...pending]);
-  const safeWorkflowResult = redactValue(result);
+  const sanitizedWorkflowResult = sanitizeValue("workflow.result", result, { suppressOnSecret: true });
+  const workflowResultSecretKinds = findingKinds(sanitizedWorkflowResult.findings);
+  if (workflowResultSecretKinds.length > 0) {
+    state.agentValidities.push("invalid");
+    state.validityReasons.push("secret-like workflow result suppressed");
+    state.secretSafeSuppressionCount++;
+    state.artifactSecretFindingCount += workflowResultSecretKinds.length;
+  }
+  const safeWorkflowResult = redactValue(sanitizedWorkflowResult.value);
   assertStructuredCloneable(safeWorkflowResult);
   const durationMs = Date.now() - started;
   const budget = budgetStatus();
+  const validity = mergeValidity(state.agentValidities);
+  const validityReasons = [...new Set(state.validityReasons)].sort();
   await store.writeJson("summary.json", {
     runId,
     meta,
@@ -6400,7 +6869,16 @@ ${body}
     warnings: state.warnings,
     aggregateUsage: state.aggregateUsage,
     usageUnavailableCount: state.usageUnavailableCount,
+    compactCount: state.compactCount,
     budget,
+    validity,
+    validityReasons,
+    stdoutFallbackUsedCount: state.stdoutFallbackUsedCount,
+    secretSafeSuppressionCount: state.secretSafeSuppressionCount,
+    metadataOnlyAuditCount: state.metadataOnlyAuditCount,
+    artifactSecretFindingCount: state.artifactSecretFindingCount,
+    invalidAgentCount: state.invalidAgentCount,
+    diagnosticAgentCount: state.diagnosticAgentCount,
     result: safeWorkflowResult
   });
   return {
@@ -6415,7 +6893,16 @@ ${body}
     warnings: state.warnings,
     aggregateUsage: state.aggregateUsage,
     usageUnavailableCount: state.usageUnavailableCount,
-    budget
+    compactCount: state.compactCount,
+    budget,
+    validity,
+    validityReasons,
+    stdoutFallbackUsedCount: state.stdoutFallbackUsedCount,
+    secretSafeSuppressionCount: state.secretSafeSuppressionCount,
+    metadataOnlyAuditCount: state.metadataOnlyAuditCount,
+    artifactSecretFindingCount: state.artifactSecretFindingCount,
+    invalidAgentCount: state.invalidAgentCount,
+    diagnosticAgentCount: state.diagnosticAgentCount
   };
 }
 function normalizeAgentOptions(value) {
@@ -6433,6 +6920,9 @@ function normalizeAgentOptions(value) {
   if (options.reasoningEffort !== void 0 && !reasoningEfforts.includes(String(options.reasoningEffort))) {
     throw new Error("agent reasoningEffort must be minimal, low, medium, or high");
   }
+  if (options.profile !== void 0 && !routeProfileIds().includes(String(options.profile))) {
+    throw new Error("agent profile must be scout, reviewer, security, or synthesizer");
+  }
   if (options.timeoutMs !== void 0 && (typeof options.timeoutMs !== "number" || !Number.isFinite(options.timeoutMs))) {
     throw new Error("agent timeoutMs must be a finite number");
   }
@@ -6442,6 +6932,7 @@ function normalizeAgentOptions(value) {
     phase: optionalString(options.phase, "agent phase"),
     model: optionalString(options.model, "agent model"),
     reasoningEffort: options.reasoningEffort,
+    profile: options.profile,
     sandbox: options.sandbox,
     writeScope: options.writeScope
   };
@@ -6554,6 +7045,9 @@ function assertAgentOptionsAst(node) {
     if (key === "reasoningEffort" && value.type === "Literal" && !reasoningEfforts.includes(String(value.value))) {
       throw new Error("workflow validation forbids unsupported reasoningEffort");
     }
+    if (key === "profile" && value.type === "Literal" && !routeProfileIds().includes(String(value.value))) {
+      throw new Error("workflow validation forbids unsupported route profile");
+    }
   }
 }
 function isMemberExpression(node, objectName, propertyName2) {
@@ -6596,6 +7090,18 @@ function optionalString(value, name) {
   if (value === void 0) return void 0;
   return requireString(value, name);
 }
+function requireCompactSchemaName(value) {
+  if (typeof value !== "string" || !compactSchemaNames().includes(value)) {
+    throw new TypeError(`compact schema must be one of ${compactSchemaNames().join(", ")}`);
+  }
+  return value;
+}
+function requireCompactMaxBytes(value) {
+  if (!Number.isInteger(value) || Number(value) < 256 || Number(value) > 64e3) {
+    throw new TypeError("compact maxBytes must be an integer between 256 and 64000");
+  }
+  return Number(value);
+}
 function assertStructuredCloneable(value) {
   try {
     structuredClone(value);
@@ -6606,7 +7112,7 @@ function assertStructuredCloneable(value) {
 
 // src/mcp-server.ts
 var protocolVersion = "2025-06-18";
-var serverVersion = "0.1.5";
+var serverVersion = packageVersion;
 var entryPath = fileURLToPath(import.meta.url);
 async function startMcpServer() {
   process.stdin.setEncoding("utf8");
@@ -6629,8 +7135,8 @@ async function handleLine(line) {
     const result = await dispatch(request);
     if (request.id !== void 0) send({ jsonrpc: "2.0", id: request.id, result });
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    send({ jsonrpc: "2.0", id: JSON.parse(line).id ?? null, error: { code: -32e3, message } });
+    const message = safeErrorMessage(error);
+    send({ jsonrpc: "2.0", id: safeRequestId(line), error: { code: -32e3, message } });
   }
 }
 async function dispatch(request) {
@@ -6713,23 +7219,20 @@ async function callTool(name, args) {
     await mkdir3(runRoot, { recursive: true });
     const jobPath = join3(runRoot, "mcp-job.json");
     await writeStatus(runRoot, { runId, status: "submitted", meta: parsed.meta, artifactRoot: runRoot, startedAt: (/* @__PURE__ */ new Date()).toISOString() });
-    await writeFile3(
-      jobPath,
-      JSON.stringify(
-        {
-          script: String(args.script ?? ""),
-          cwd,
-          artifactRoot,
-          runId,
-          args: args.args,
-          policy,
-          codexBin: args.codexBin
-        },
-        null,
-        2
-      ),
-      "utf8"
-    );
+    const job = {
+      script: String(args.script ?? ""),
+      cwd,
+      artifactRoot,
+      runId,
+      args: args.args,
+      policy,
+      codexBin: args.codexBin
+    };
+    const safeJob = sanitizeValue("mcp.job", job, { suppressOnSecret: true });
+    if (safeJob.findings.length > 0) {
+      throw new Error(`workflow_submit rejected secret-like job payload: ${safeJob.secretFindingKinds.join(", ")}`);
+    }
+    await writeFile3(jobPath, JSON.stringify(safeJob.value, null, 2), "utf8");
     const child = spawn2(process.execPath, [entryPath, "--run-workflow-job", jobPath], {
       cwd,
       detached: true,
@@ -6793,7 +7296,7 @@ async function readStatus(runRoot) {
 }
 async function writeStatus(runRoot, status) {
   await mkdir3(runRoot, { recursive: true });
-  await writeFile3(join3(runRoot, "status.json"), JSON.stringify(status, null, 2), "utf8");
+  await writeFile3(join3(runRoot, "status.json"), JSON.stringify(sanitizeForReturn(status, "mcp.status"), null, 2), "utf8");
 }
 async function runWorkflowJob(jobPath) {
   const job = JSON.parse(await readFile3(jobPath, "utf8"));
@@ -6801,7 +7304,7 @@ async function runWorkflowJob(jobPath) {
   const runRoot = join3(job.artifactRoot, "runs", job.runId);
   const startedAt = (/* @__PURE__ */ new Date()).toISOString();
   await writeStatus(runRoot, { runId: job.runId, status: "running", meta: parsed.meta, artifactRoot: runRoot, startedAt });
-  const store = new ArtifactStore({ root: job.artifactRoot, runId: job.runId });
+  const store = new ArtifactStore({ root: job.artifactRoot, runId: job.runId, hygiene: createArtifactHygiene(job.policy) });
   const runner = new CodexExecRunner({ cwd: job.cwd, store, policy: job.policy, codexBin: job.codexBin });
   try {
     const result = await runWorkflow(job.script, {
@@ -6827,7 +7330,7 @@ async function runWorkflowJob(jobPath) {
 }
 async function writeFailureSummary(artifactRoot, runId, meta, error) {
   const runRoot = join3(artifactRoot, "runs", runId);
-  const message = redactText(error instanceof Error ? error.message : String(error));
+  const message = redactText(safeErrorMessage(error));
   await mkdir3(runRoot, { recursive: true });
   await writeStatus(runRoot, {
     runId,
@@ -6840,17 +7343,20 @@ async function writeFailureSummary(artifactRoot, runId, meta, error) {
   await writeFile3(
     join3(runRoot, "summary.json"),
     JSON.stringify(
-      {
-        runId,
-        status: "failed",
-        meta,
-        phases: [],
-        logs: [],
-        agentCount: 0,
-        durationMs: 0,
-        warnings: [message],
-        result: null
-      },
+      sanitizeForReturn(
+        {
+          runId,
+          status: "failed",
+          meta,
+          phases: [],
+          logs: [],
+          agentCount: 0,
+          durationMs: 0,
+          warnings: [message],
+          result: null
+        },
+        "mcp.failureSummary"
+      ),
       null,
       2
     ),
@@ -6858,14 +7364,23 @@ async function writeFailureSummary(artifactRoot, runId, meta, error) {
   );
 }
 function text(value) {
+  const safe = sanitizeForReturn(value, "mcp.return");
   return {
-    content: [{ type: "text", text: JSON.stringify(value, null, 2) }],
-    structuredContent: value
+    content: [{ type: "text", text: JSON.stringify(safe, null, 2) }],
+    structuredContent: safe
   };
 }
 function send(message) {
-  process.stdout.write(`${JSON.stringify(message)}
+  process.stdout.write(`${JSON.stringify(sanitizeForReturn(message, "mcp.jsonrpc"))}
 `);
+}
+function safeRequestId(line) {
+  try {
+    const parsed = JSON.parse(line);
+    return parsed.id ?? null;
+  } catch {
+    return null;
+  }
 }
 if (import.meta.url === `file://${process.argv[1]}` && process.argv[2] === "--run-workflow-job") {
   const jobPath = process.argv[3];

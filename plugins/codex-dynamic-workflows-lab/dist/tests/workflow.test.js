@@ -88,11 +88,24 @@ return agent("read", { label: "read", reasoningEffort: "low" })
 `);
     assert.match(parsed.body, /reasoningEffort/);
 });
+test("parseWorkflowScript accepts supported route profiles", () => {
+    const parsed = parseWorkflowScript(`
+export const meta = { name: "profile_worker", description: "Demo workflow" }
+return agent("read", { label: "read", profile: "scout" })
+`);
+    assert.match(parsed.body, /profile/);
+});
 test("parseWorkflowScript rejects unsupported reasoning effort values", () => {
     assert.throws(() => parseWorkflowScript(`
 export const meta = { name: "bad_reasoning", description: "bad" }
 return agent("probe", { label: "probe", reasoningEffort: "xhigh" })
 `), /unsupported reasoningEffort/);
+});
+test("parseWorkflowScript rejects unsupported route profiles", () => {
+    assert.throws(() => parseWorkflowScript(`
+export const meta = { name: "bad_profile", description: "bad" }
+return agent("probe", { label: "probe", profile: "director" })
+`), /unsupported route profile/);
 });
 test("runWorkflow executes phases and parallel agents", async () => {
     const dir = await mkdtemp(join(tmpdir(), "codex-flow-test-"));
@@ -154,6 +167,130 @@ return { first, second, afterFirst, finalSpent: budget.spent() }
     const summary = JSON.parse(await readFile(join(dir, "artifacts", "runs", result.runId, "summary.json"), "utf8"));
     assert.equal(summary.aggregateUsage.totalTokens, 22);
     assert.equal(summary.budget.remainingTokens, 8);
+});
+test("runWorkflow aggregates agent evidence validity", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "codex-flow-test-"));
+    const validityRunner = {
+        async run(input) {
+            return {
+                agentId: input.label,
+                label: input.label,
+                status: "completed",
+                result: `result:${input.prompt}`,
+                durationMs: 1,
+                warnings: [],
+                artifacts: {},
+                validity: input.label === "a" ? "diagnostic_only" : "valid",
+                validityReasons: input.label === "a" ? ["stdout exceeded policy and last-message fallback was used"] : [],
+                auditCompleteness: input.label === "a" ? "metadata_only" : "full",
+                stdoutFallbackUsed: input.label === "a",
+            };
+        },
+    };
+    const result = await runWorkflow(`
+export const meta = { name: "validity_demo", description: "Demo workflow" }
+await agent("a", { label: "a" })
+await agent("b", { label: "b" })
+return true
+`, {
+        cwd: dir,
+        artifactRoot: join(dir, "artifacts"),
+        runner: validityRunner,
+        policy: { maxAgents: 2, concurrency: 1 },
+    });
+    assert.equal(result.validity, "diagnostic_only");
+    assert.equal(result.stdoutFallbackUsedCount, 1);
+    assert.equal(result.metadataOnlyAuditCount, 1);
+    assert.equal(result.diagnosticAgentCount, 1);
+    const summary = JSON.parse(await readFile(join(dir, "artifacts", "runs", result.runId, "summary.json"), "utf8"));
+    assert.equal(summary.validity, "diagnostic_only");
+    assert.equal(summary.stdoutFallbackUsedCount, 1);
+});
+test("runWorkflow resolves route profiles without changing legacy agent result shape", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "codex-flow-test-"));
+    const observed = [];
+    const routeRunner = {
+        async run(input) {
+            observed.push({
+                label: input.label,
+                profile: input.options.profile,
+                reasoningEffort: input.options.reasoningEffort,
+            });
+            return {
+                agentId: input.label,
+                label: input.label,
+                status: "completed",
+                result: `result:${input.label}`,
+                durationMs: 1,
+                warnings: [],
+                artifacts: {},
+            };
+        },
+    };
+    const result = await runWorkflow(`
+export const meta = { name: "profile_demo", description: "Demo workflow" }
+const legacy = await agent("legacy", { label: "legacy" })
+const routed = await agent("routed", { label: "routed", profile: "scout" })
+const explicit = await agent("explicit", { label: "explicit", profile: "reviewer", reasoningEffort: "low" })
+return { legacy, routed, explicit }
+`, {
+        cwd: dir,
+        artifactRoot: join(dir, "artifacts"),
+        runner: routeRunner,
+        policy: { maxAgents: 3, concurrency: 1, allowedRouteProfiles: ["scout", "reviewer"], allowedReasoningEfforts: ["low"] },
+    });
+    assert.deepEqual(result.result, {
+        legacy: "result:legacy",
+        routed: "result:routed",
+        explicit: "result:explicit",
+    });
+    assert.deepEqual(observed, [
+        { label: "legacy", profile: undefined, reasoningEffort: undefined },
+        { label: "routed", profile: "scout", reasoningEffort: "low" },
+        { label: "explicit", profile: "reviewer", reasoningEffort: "low" },
+    ]);
+    const events = await readFile(join(dir, "artifacts", "runs", result.runId, "events.jsonl"), "utf8");
+    assert.match(events, /"type":"agent\.profile"/);
+});
+test("runWorkflow writes compact payloads under byte caps", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "codex-flow-test-"));
+    const result = await runWorkflow(`
+export const meta = { name: "compact_demo", description: "Demo workflow" }
+const scout = await compact({
+  summary: "Small repository map.",
+  files: [{ path: "README.md", why: "Entry point for usage evidence." }],
+  limits: "No live workers were run."
+}, "scout_map", 1024)
+return { scout }
+`, {
+        cwd: dir,
+        artifactRoot: join(dir, "artifacts"),
+        runner: fakeRunner,
+        policy: { maxAgents: 1, concurrency: 1 },
+    });
+    assert.equal(result.compactCount, 1);
+    assert.equal(result.result.scout.schemaName, "scout_map");
+    assert.ok(result.result.scout.byteLength <= 1024);
+    const compact = JSON.parse(await readFile(join(dir, "artifacts", "runs", result.runId, "compact-001.json"), "utf8"));
+    assert.equal(compact.value.files[0].path, "README.md");
+    const summary = JSON.parse(await readFile(join(dir, "artifacts", "runs", result.runId, "summary.json"), "utf8"));
+    assert.equal(summary.compactCount, 1);
+});
+test("runWorkflow rejects unsafe compact export payloads", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "codex-flow-test-"));
+    await assert.rejects(() => runWorkflow(`
+export const meta = { name: "compact_bad", description: "Demo workflow" }
+return compact({
+  summary: "Unsafe map.",
+  files: [{ path: ".env", why: "Should not be exported." }],
+  limits: "none"
+}, "scout_map", 1024)
+`, {
+        cwd: dir,
+        artifactRoot: join(dir, "artifacts"),
+        runner: fakeRunner,
+        policy: { maxAgents: 1, concurrency: 1 },
+    }), /relative non-secret path/);
 });
 test("runWorkflow skips new workers after token budget is exhausted", async () => {
     const dir = await mkdtemp(join(tmpdir(), "codex-flow-test-"));

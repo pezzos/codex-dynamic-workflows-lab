@@ -33,6 +33,7 @@ test("CodexExecRunner uses fake codex and parses noisy JSONL", async () => {
     assert.equal(command.args.includes("--ask-for-approval") && command.args.indexOf("--ask-for-approval") > command.args.indexOf("exec"), false);
     assert.ok(command.args.includes("--ignore-user-config"));
     assert.equal(command.args[command.args.indexOf("--sandbox") + 1], "read-only");
+    assert.equal(String(command.args[command.args.indexOf("-o") + 1]).includes(join("artifacts", "runs", "run")), false);
 });
 test("CodexExecRunner records model and reasoning effort routing", async () => {
     const dir = await mkdtemp(join(tmpdir(), "codex-flow-runner-"));
@@ -57,6 +58,28 @@ test("CodexExecRunner records model and reasoning effort routing", async () => {
     assert.equal(command.reasoningEffort, "low");
     assert.equal(command.args[command.args.indexOf("--model") + 1], "gpt-5.1-codex-mini");
     assert.equal(command.args[command.args.indexOf("-c") + 1], 'model_reasoning_effort="low"');
+});
+test("CodexExecRunner records route profile metadata", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "codex-flow-runner-"));
+    const policy = { ...defaultPolicy, allowedRouteProfiles: ["scout"], allowedReasoningEfforts: ["low"] };
+    const store = new ArtifactStore({ root: join(dir, "artifacts"), runId: "run" });
+    await store.init({ name: "demo", description: "demo" }, policy);
+    const runner = new CodexExecRunner({
+        cwd: dir,
+        store,
+        policy,
+        codexBin: resolve("scripts/fake-codex.js"),
+    });
+    const result = await runner.run({
+        prompt: "hello",
+        label: "profiled",
+        options: { profile: "scout", reasoningEffort: "low" },
+    });
+    assert.equal(result.profile, "scout");
+    assert.equal(result.reasoningEffort, "low");
+    const command = JSON.parse(await readFile(join(dir, "artifacts", "runs", "run", "agents", "codex-001", "command.json"), "utf8"));
+    assert.equal(command.profile, "scout");
+    assert.equal(command.reasoningEffort, "low");
 });
 test("CodexExecRunner isolates CODEX_HOME by default", async () => {
     const dir = await mkdtemp(join(tmpdir(), "codex-flow-runner-"));
@@ -217,6 +240,46 @@ test("CodexExecRunner keeps truncated logs when stdout exceeds policy", async ()
     assert.doesNotMatch(stderr, /rt_stderr_secret/);
     assert.doesNotMatch(lastMessage, /rt_large_secret/);
     assert.doesNotMatch(resultJson, /rt_large_secret/);
+});
+test("CodexExecRunner suppresses secret-like worker output and preserves audit metadata", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "codex-flow-runner-"));
+    const parentHome = await mkdtemp(join(tmpdir(), "codex-flow-parent-home-"));
+    const parentCodexHome = join(parentHome, ".codex");
+    await mkdir(parentCodexHome, { recursive: true });
+    await writeFile(join(parentCodexHome, "auth.json"), JSON.stringify({ token: "test-auth" }), "utf8");
+    const policy = { ...defaultPolicy, secrets: "codex-auth-only" };
+    const store = new ArtifactStore({ root: join(dir, "artifacts"), runId: "run" });
+    await store.init({ name: "demo", description: "demo" }, policy);
+    const runner = new CodexExecRunner({
+        cwd: dir,
+        store,
+        policy,
+        codexBin: resolve("scripts/fake-codex.js"),
+        env: { PATH: process.env.PATH, HOME: parentHome },
+    });
+    const result = await runner.run({
+        prompt: "FAKE_SECRET_STDOUT",
+        label: "secret",
+        options: {},
+    });
+    const agentDir = join(dir, "artifacts", "runs", "run", "agents", "codex-001");
+    const metadata = JSON.parse(await readFile(join(agentDir, "capture-metadata.json"), "utf8"));
+    assert.equal(result.status, "completed");
+    assert.equal(result.validity, "invalid");
+    assert.equal(result.auditCompleteness, "metadata_only");
+    assert.equal(result.stdoutSuppressedForSecrets, true);
+    assert.deepEqual(result.secretFindingKinds, ["local_api_key"]);
+    assert.equal(result.usage?.totalTokens, 5);
+    assert.equal(metadata.stdoutPersisted, false);
+    assert.equal(metadata.stderrPersisted, false);
+    assert.equal(metadata.lastMessagePersisted, false);
+    assert.equal(metadata.eventsPersisted, false);
+    assert.equal(metadata.usageSource, "jsonl");
+    assert.match(JSON.stringify(result.result), /secret_like_content/);
+    assert.doesNotMatch(JSON.stringify(result), /local_api_key_1234567890abcdef/);
+    await assert.rejects(() => readFile(join(agentDir, "stdout.log"), "utf8"), /ENOENT/);
+    await assert.rejects(() => readFile(join(agentDir, "stderr.log"), "utf8"), /ENOENT/);
+    await assert.rejects(() => readFile(join(agentDir, "last-message.txt"), "utf8"), /ENOENT/);
 });
 test("CodexExecRunner fails oversized stdout when last-message fallback is absent", async () => {
     const dir = await mkdtemp(join(tmpdir(), "codex-flow-runner-"));

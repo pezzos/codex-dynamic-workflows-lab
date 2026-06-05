@@ -62,17 +62,16 @@ Remaining gaps:
 ### 3. Model And Reasoning Routing
 
 The lab supports a per-worker `model` option and an `allowedModels` policy list.
-Version `0.1.6` adds per-worker `reasoningEffort`, policy allow-lists, and
-artifact-visible routing fields.
+Version `0.1.6` added per-worker `reasoningEffort`, policy allow-lists, and
+artifact-visible routing fields. Version `0.1.7` adds deterministic route profiles for
+`scout`, `reviewer`, `security`, and `synthesizer`.
 
 Remaining gaps:
 
-- built-in role profiles such as scout, verifier, security reviewer, and
-  synthesizer;
 - simple routing rules that prefer cheaper models for narrow workers and reserve
   expensive models for hard reasoning or synthesis;
-- run artifacts that explain why a model/reasoning pair was selected, not only
-  what was selected.
+- richer run artifacts that explain why a model/reasoning/profile route was selected,
+  not only what was selected.
 
 ### 4. Warm Context, Resume, And Cache
 
@@ -90,8 +89,8 @@ Missing pieces:
 
 ### 5. Rich Workflow Primitives
 
-The lab currently exposes `agent`, `parallel`, `pipeline`, `phase`, `log`, and a
-small runtime context.
+The lab currently exposes `agent`, `parallel`, `pipeline`, `phase`, `log`, `compact`,
+and a small runtime context.
 
 Missing pieces:
 

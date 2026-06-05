@@ -1,3 +1,4 @@
+import { routeProfileIds } from "./profiles.js";
 export const reasoningEfforts = ["minimal", "low", "medium", "high"];
 export const defaultPolicy = Object.freeze({
     mode: "read-only",
@@ -17,7 +18,9 @@ export const defaultPolicy = Object.freeze({
     allowedCommands: ["codex"],
     allowedModels: [],
     allowedReasoningEfforts: [],
+    allowedRouteProfiles: [],
     secrets: "none",
+    outputAuditMode: "auto",
 });
 export function normalizePolicy(input = {}) {
     const policy = { ...defaultPolicy, ...input };
@@ -49,6 +52,15 @@ export function validatePolicy(policy) {
             throw new Error(`policy.allowedReasoningEfforts contains unsupported value: ${effort}`);
         }
     }
+    if (!Array.isArray(policy.allowedRouteProfiles)) {
+        throw new Error("policy.allowedRouteProfiles must be an array");
+    }
+    const profiles = routeProfileIds();
+    for (const profile of policy.allowedRouteProfiles) {
+        if (!profiles.includes(profile)) {
+            throw new Error(`policy.allowedRouteProfiles contains unsupported value: ${profile}`);
+        }
+    }
     if (policy.mode === "read-only" && policy.writableRoots.length > 0) {
         throw new Error("read-only policy cannot define writableRoots");
     }
@@ -57,6 +69,9 @@ export function validatePolicy(policy) {
     }
     if (!["none", "codex-auth-only"].includes(policy.secrets)) {
         throw new Error("policy.secrets must be none or codex-auth-only");
+    }
+    if (!["auto", "full", "metadata-only", "none"].includes(policy.outputAuditMode)) {
+        throw new Error("policy.outputAuditMode must be auto, full, metadata-only, or none");
     }
 }
 export function stablePolicyHash(policy) {

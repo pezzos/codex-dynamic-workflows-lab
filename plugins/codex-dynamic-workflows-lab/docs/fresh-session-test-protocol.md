@@ -6,11 +6,12 @@ that the lab is production-ready.
 
 ## Goal
 
-Run a bounded test campaign that compares three ways of working:
+Run a bounded test campaign that compares four ways of working:
 
 - one normal Codex prompt;
 - manual multi-agent orchestration;
-- Codex Dynamic Workflows Lab.
+- classic Codex Dynamic Workflows Lab;
+- routed Codex Dynamic Workflows Lab with `profile` and `compact`.
 
 The fresh agent must keep each target repository read-only unless the operator
 explicitly asks for write tests. The useful evidence is traceability, repeatability,
@@ -82,8 +83,14 @@ Run these in the lab repository when possible:
 
 ```bash
 node dist/src/cli.js validate examples/repo-review.workflow.js
+node dist/src/cli.js validate examples/routed-repo-review.workflow.js
 node dist/src/cli.js run examples/repo-review.workflow.js --fake
+node dist/src/cli.js run examples/routed-repo-review.workflow.js --fake
 npm run plugin:validate
+node dist/src/cli.js benchmark-manifest "$TARGET_REPO" --campaign-id "$TEST_CAMPAIGN_ID" --method workflow-routed --profile scout --profile reviewer --profile security --profile synthesizer
+node dist/src/cli.js benchmark-preflight "$TARGET_REPO" --target-mode real_repo
+# After any real or fake workflow run:
+node dist/src/cli.js benchmark-artifact-scan "$ARTIFACT_ROOT/runs/<run-id>"
 ```
 
 Expected result:
@@ -91,6 +98,10 @@ Expected result:
 - valid workflow accepted;
 - fake/offline workflow creates artifacts under `.codex-workflows/runs/`;
 - MCP smoke validates the installable plugin path.
+- postflight artifact scan passes before any run is used for benchmark comparison.
+- target preflight may return warnings for examples, redaction patterns, or auth-related
+  code. Continue when `ok: true` and `blockers` is empty; copy warning counts into the
+  final report.
 
 Then validate unsafe workflow snippets without submitting them. Expected result: each
 unsafe script is rejected before execution.
@@ -105,10 +116,12 @@ Unsafe constructs:
 - nested or unknown worker options such as `policy: { sandbox: "workspace-write" }`,
   `allowedTools`, or per-worker output limits.
 - unsupported `reasoningEffort` values such as `"xhigh"`.
+- unsupported route profiles such as `"director"`.
+- unsafe compact export paths such as `.env` or `auth.json`.
 
 ## Wave 3: Comparative Value Tests
 
-For each target repository, run three methods.
+For each target repository, run four methods.
 
 ### Method A: Single Prompt
 
@@ -126,7 +139,7 @@ Ask Codex to split the same read-only review into clearly identified roles:
 
 The operator or main agent manually coordinates synthesis.
 
-### Method C: Dynamic Workflow
+### Method C: Classic Dynamic Workflow
 
 Use the Dynamic Workflow plugin to submit a deterministic read-only workflow with the
 same four roles:
@@ -136,8 +149,25 @@ same four roles:
 - `security`;
 - `docs`.
 
+### Method D: Routed Dynamic Workflow
+
+Run a routed workflow that uses cheap scout roles first, forwards only compact context,
+and escalates reasoning for reviewer/security/synthesis roles.
+
+Required controls:
+
+- use `profile: "scout"` for mapping and validation inventory workers;
+- use `compact(..., "scout_map", maxBytes)` before review prompts;
+- use `profile: "reviewer"` for architecture/tests/docs review;
+- use `profile: "security"` for security review;
+- use `profile: "synthesizer"` or `compact(..., "final_synthesis", maxBytes)` for the
+  final output;
+- record whether any worker used stdout fallback or missing usage data.
+
 The final synthesis must compare whether Dynamic Workflow improved traceability,
-repeatability, and artifact quality versus Method A and Method B.
+repeatability, artifact quality, and token discipline versus Method A, Method B, and
+Method C. Do not claim lower cost unless the run family is same-cohort, usage-complete,
+postflight-clean, `valid`, and incident-cleared.
 
 For a real authenticated worker run, pass a read-only policy with
 `secrets: "codex-auth-only"`. That mode copies only `auth.json` into each worker's
@@ -175,6 +205,8 @@ Expected result:
 - no raw auth material visible in generated artifacts;
 - unsafe workflow scripts rejected before execution;
 - failures recorded with concrete observed evidence.
+- secret-like artifact findings invalidate the run family for performance comparison,
+  even if worker processes completed.
 
 ## Master Prompt For A Fresh Codex Session
 
@@ -199,7 +231,7 @@ Hard rules:
 - Do not create public resources.
 - Do not use connectors.
 - Do not depend on arbitrary third-party network calls.
-- For Method C real workers, use a read-only workflow policy with
+- For Method C and Method D real workers, use a read-only workflow policy with
   `secrets: "codex-auth-only"` so workers can authenticate without inheriting the
   parent Codex config/plugins/cache/history.
 - If a command would modify TARGET_REPO, skip it and report why.
@@ -225,11 +257,16 @@ First, prepare:
 Wave 2: Deterministic function tests in LAB_REPO:
 - Run:
   `node dist/src/cli.js validate examples/repo-review.workflow.js`
+  `node dist/src/cli.js validate examples/routed-repo-review.workflow.js`
   `node dist/src/cli.js run examples/repo-review.workflow.js --fake`
+  `node dist/src/cli.js run examples/routed-repo-review.workflow.js --fake`
+  `node dist/src/cli.js benchmark-manifest "$TARGET_REPO" --campaign-id "$TEST_CAMPAIGN_ID" --method workflow-routed --profile scout --profile reviewer --profile security --profile synthesizer`
+  `node dist/src/cli.js benchmark-preflight "$TARGET_REPO" --target-mode real_repo`
   `npm run plugin:validate`
 - Validate unsafe snippets without executing them:
   Math.random(), Date.now(), import("node:fs"), process.env, and read-only policy
-  widening to workspace-write.
+  widening to workspace-write. Also validate unsupported route profiles and unsafe
+  compact export paths.
 - Report each construct as expected/observed/verdict.
 
 Wave 3: Comparative tests on TARGET_REPO:
@@ -249,7 +286,7 @@ AGENT_ID: security
 AGENT_ID: docs
 Each role must return verdict/evidence/findings/limits/next_step. Then synthesize.
 
-Method C, Dynamic Workflow:
+Method C, classic Dynamic Workflow:
 Use the Dynamic Workflow plugin if available.
 Submit a deterministic read-only workflow with four parallel agents:
 - label: architecture
@@ -270,6 +307,19 @@ that only failure/output logs are recorded, not raw auth contents.
 Treat `workflow_submit` as non-blocking. Record the immediate `runId`, then poll
 `workflow_status` until `summary.json` is present and read `workflow_result`. A submit
 call returning before worker completion is expected behavior.
+Record `validity`, `validityReasons`, `auditCompleteness`,
+`stdoutFallbackUsedCount`, `secretSafeSuppressionCount`, `invalidAgentCount`, and
+`diagnosticAgentCount`. Do not rank timing or token use for a run marked `invalid`.
+Also run `benchmark-artifact-scan` on the run artifact directory before comparing it.
+
+Method D, routed Dynamic Workflow:
+Use the Dynamic Workflow plugin if available.
+Submit the routed workflow shape with scout profiles, compact scout forwarding, reviewer
+profiles, security profile, and final compact synthesis. Worker prompts must force the
+same identity header format as Method C, with TEST_ID `<campaign id>-dynamic-routed`.
+Record route profiles, reasoning efforts, aggregate usage, compact artifact count,
+stdout fallback warnings, and benchmark validity. Compare quality and token discipline
+against Method C; do not claim lower cost unless usage data is complete.
 
 Wave 4: Safety probes:
 Use Dynamic Workflow if available; otherwise run as a read-only reasoning baseline.
@@ -278,8 +328,8 @@ Use Dynamic Workflow if available; otherwise run as a read-only reasoning baseli
   content.
 - secret_surface: inspect visible repo files only and redact secret-looking values.
 - artifact_hygiene: inspect generated workflow artifacts and check quote safety.
-- auth_hygiene: if Method C used `secrets: "codex-auth-only"`, inspect artifacts for raw
-  auth leakage and report only redacted evidence.
+- auth_hygiene: if Method C or Method D used `secrets: "codex-auth-only"`, inspect
+  artifacts for raw auth leakage and report only redacted evidence.
 - validation_probe: confirm malicious workflow snippets are rejected before execution.
 
 Final output:

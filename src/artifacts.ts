@@ -2,10 +2,12 @@ import { mkdir, readFile, writeFile, appendFile, lstat, realpath } from "node:fs
 import { join, resolve } from "node:path";
 import type { WorkflowMeta, WorkflowPolicy } from "./types.js";
 import { stablePolicyHash } from "./policy.js";
+import type { ArtifactHygiene } from "./hygiene.js";
 
 export interface ArtifactStoreOptions {
   root: string;
   runId: string;
+  hygiene?: ArtifactHygiene;
 }
 
 export class ArtifactStore {
@@ -13,10 +15,12 @@ export class ArtifactStore {
   readonly runId: string;
   readonly runRoot: string;
   readonly agentsRoot: string;
+  private readonly hygiene?: ArtifactHygiene;
 
   constructor(options: ArtifactStoreOptions) {
     this.root = resolve(options.root);
     this.runId = options.runId;
+    this.hygiene = options.hygiene;
     assertSafeId(options.runId, "runId");
     this.runRoot = join(this.root, "runs", options.runId);
     this.agentsRoot = join(this.runRoot, "agents");
@@ -42,7 +46,7 @@ export class ArtifactStore {
   async initAgent(agentId: string, label: string, prompt: string): Promise<string> {
     const dir = this.agentDir(agentId);
     await mkdir(dir, { recursive: true });
-    await writeFile(join(dir, "prompt.md"), prompt, "utf8");
+    await writeFile(join(dir, "prompt.md"), this.safeText("agent.prompt", prompt), "utf8");
     await this.appendEvent({ type: "agent.created", runId: this.runId, agentId, label });
     return dir;
   }
@@ -52,7 +56,7 @@ export class ArtifactStore {
     const dir = this.agentDir(agentId);
     await mkdir(dir, { recursive: true });
     const path = join(dir, file);
-    await writeFile(path, JSON.stringify(value, null, 2), "utf8");
+    await writeFile(path, JSON.stringify(this.safeValue(`agent.${file}`, value), null, 2), "utf8");
     return path;
   }
 
@@ -61,20 +65,21 @@ export class ArtifactStore {
     const dir = this.agentDir(agentId);
     await mkdir(dir, { recursive: true });
     const path = join(dir, file);
-    await writeFile(path, value, "utf8");
+    await writeFile(path, this.safeText(`agent.${file}`, value), "utf8");
     return path;
   }
 
   async appendEvent(event: Record<string, unknown>): Promise<void> {
     await mkdir(this.runRoot, { recursive: true });
-    await appendFile(join(this.runRoot, "events.jsonl"), `${JSON.stringify({ ...event, at: new Date().toISOString() })}\n`);
+    const safeEvent = this.safeValue("events.jsonl", { ...event, at: new Date().toISOString() });
+    await appendFile(join(this.runRoot, "events.jsonl"), `${JSON.stringify(ensureRecord(safeEvent))}\n`);
   }
 
   async writeJson(file: string, value: unknown): Promise<string> {
     assertSafeFilename(file);
     await mkdir(this.runRoot, { recursive: true });
     const path = join(this.runRoot, file);
-    await writeFile(path, JSON.stringify(value, null, 2), "utf8");
+    await writeFile(path, JSON.stringify(this.safeValue(file, value), null, 2), "utf8");
     return path;
   }
 
@@ -84,6 +89,19 @@ export class ArtifactStore {
     await assertInsideRoot(path, this.runRoot);
     return JSON.parse(await readFile(path, "utf8")) as T;
   }
+
+  private safeText(surface: string, value: string): string {
+    return this.hygiene?.sanitizeText(surface, value).text ?? value;
+  }
+
+  private safeValue(surface: string, value: unknown): unknown {
+    return this.hygiene?.sanitizeValue(surface, value).value ?? value;
+  }
+}
+
+function ensureRecord(value: unknown): Record<string, unknown> {
+  if (value && typeof value === "object" && !Array.isArray(value)) return value as Record<string, unknown>;
+  return { type: "event.suppressed", value };
 }
 
 export function assertSafeId(value: string, name: string): void {

@@ -1,5 +1,9 @@
 export { ArtifactStore } from "./artifacts.js";
+export { classifyRunValidity, createBenchmarkManifest, nonCachedTotal, postflightBenchmarkArtifacts, preflightBenchmarkTarget } from "./benchmark.js";
 export { CodexExecRunner } from "./codex-runner.js";
+export { compactValue } from "./compact.js";
 export { parseNoisyJsonl } from "./jsonl.js";
 export { defaultPolicy, normalizePolicy, stablePolicyHash, validatePolicy } from "./policy.js";
+export { resolveAgentProfile, routeProfiles } from "./profiles.js";
+export { scanArtifactRootForSecretLike, scanExportableText, scanExportableValue, scanTargetForSecretLike } from "./safety.js";
 export { parseWorkflowScript, runWorkflow } from "./workflow.js";

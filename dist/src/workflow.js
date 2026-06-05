@@ -1,7 +1,10 @@
 import vm from "node:vm";
 import { parse } from "acorn";
 import { ArtifactStore } from "./artifacts.js";
+import { compactSchemaNames, compactValue } from "./compact.js";
+import { createArtifactHygiene, findingKinds, mergeValidity, sanitizeValue } from "./hygiene.js";
 import { normalizePolicy, reasoningEfforts } from "./policy.js";
+import { resolveAgentProfile, routeProfileIds } from "./profiles.js";
 import { redactText, redactValue } from "./redaction.js";
 import { addUsage, emptyUsage } from "./usage.js";
 const agentOptionKeys = new Set([
@@ -10,6 +13,7 @@ const agentOptionKeys = new Set([
     "schema",
     "model",
     "reasoningEffort",
+    "profile",
     "sandbox",
     "writeScope",
     "timeoutMs",
@@ -49,6 +53,7 @@ export async function runWorkflow(script, options) {
     const store = new ArtifactStore({
         root: options.artifactRoot ?? `${options.cwd}/.codex-workflows`,
         runId,
+        hygiene: createArtifactHygiene(policy),
     });
     await store.init(meta, policy);
     const state = {
@@ -58,6 +63,15 @@ export async function runWorkflow(script, options) {
         warnings: [],
         aggregateUsage: emptyUsage(),
         usageUnavailableCount: 0,
+        compactCount: 0,
+        agentValidities: [],
+        validityReasons: [],
+        stdoutFallbackUsedCount: 0,
+        secretSafeSuppressionCount: 0,
+        metadataOnlyAuditCount: 0,
+        artifactSecretFindingCount: 0,
+        invalidAgentCount: 0,
+        diagnosticAgentCount: 0,
     };
     const limiter = createLimiter(policy.concurrency);
     const pending = new Set();
@@ -92,7 +106,7 @@ export async function runWorkflow(script, options) {
     const agent = async (prompt, rawOptions = {}) => {
         throwIfAborted();
         const agentPrompt = requireString(prompt, "agent prompt");
-        const agentOptions = normalizeAgentOptions(rawOptions);
+        const agentOptions = resolveAgentProfile(normalizeAgentOptions(rawOptions), policy);
         if (agentOptions.sandbox === "workspace-write" && policy.mode !== "write-worktree") {
             throw new Error("worker requested writes but workflow policy is read-only");
         }
@@ -118,6 +132,17 @@ export async function runWorkflow(script, options) {
         const run = limiter(async () => {
             throwIfAborted();
             await store.initAgent(agentId, label, agentPrompt);
+            if (agentOptions.profile) {
+                await store.appendEvent({
+                    type: "agent.profile",
+                    runId,
+                    agentId,
+                    label,
+                    profile: agentOptions.profile,
+                    model: agentOptions.model ?? null,
+                    reasoningEffort: agentOptions.reasoningEffort ?? null,
+                });
+            }
             await store.appendEvent({ type: "agent.started", runId, agentId, label, phase: assignedPhase });
             try {
                 const result = await options.runner.run({
@@ -128,13 +153,40 @@ export async function runWorkflow(script, options) {
                     schema: agentOptions.schema,
                     options: { ...agentOptions, timeoutMs: agentOptions.timeoutMs ?? policy.maxWorkerDurationMs },
                 });
-                const safeResult = redactValue(result);
+                const sanitizedAgentResult = sanitizeValue("agent.result", result.result, { suppressOnSecret: true });
+                const localSecretKinds = findingKinds(sanitizedAgentResult.findings);
+                const agentSecretKinds = [...new Set([...(result.secretFindingKinds ?? []), ...localSecretKinds])].sort();
+                const agentValidity = agentSecretKinds.length > 0 ? "invalid" : result.validity ?? (result.stdoutFallbackUsed ? "diagnostic_only" : "valid");
+                const safeResult = {
+                    ...redactValue(result),
+                    result: sanitizedAgentResult.value,
+                    validity: agentValidity,
+                    validityReasons: [
+                        ...(result.validityReasons ?? []),
+                        ...(agentSecretKinds.length > 0 ? ["secret-like agent result suppressed"] : []),
+                    ],
+                    secretFindingKinds: agentSecretKinds,
+                };
                 if (result.usage) {
                     state.aggregateUsage = addUsage(state.aggregateUsage, result.usage);
                 }
                 else {
                     state.usageUnavailableCount++;
                 }
+                state.agentValidities.push(agentValidity);
+                state.validityReasons.push(...(safeResult.validityReasons ?? []));
+                if (safeResult.stdoutFallbackUsed)
+                    state.stdoutFallbackUsedCount++;
+                if (safeResult.stdoutSuppressedForSecrets || agentSecretKinds.length > 0)
+                    state.secretSafeSuppressionCount++;
+                if (safeResult.auditCompleteness === "metadata_only")
+                    state.metadataOnlyAuditCount++;
+                if (agentSecretKinds.length > 0)
+                    state.artifactSecretFindingCount += agentSecretKinds.length;
+                if (agentValidity === "invalid")
+                    state.invalidAgentCount++;
+                if (agentValidity === "diagnostic_only")
+                    state.diagnosticAgentCount++;
                 await store.writeAgentJson(agentId, "result.json", safeResult);
                 await store.appendEvent({
                     type: "agent.completed",
@@ -142,6 +194,7 @@ export async function runWorkflow(script, options) {
                     agentId,
                     label,
                     status: safeResult.status,
+                    validity: safeResult.validity,
                     usage: result.usage ?? null,
                 });
                 state.warnings.push(...safeResult.warnings.map((warning) => redactText(warning)));
@@ -157,6 +210,22 @@ export async function runWorkflow(script, options) {
         pending.add(run);
         run.finally(() => pending.delete(run));
         return run;
+    };
+    const compact = async (value, schemaName, maxBytes = 4_000) => {
+        throwIfAborted();
+        const payload = compactValue(value, requireCompactSchemaName(schemaName), requireCompactMaxBytes(maxBytes));
+        state.compactCount++;
+        const file = `compact-${String(state.compactCount).padStart(3, "0")}.json`;
+        await store.writeJson(file, payload);
+        await store.appendEvent({
+            type: "compact.created",
+            runId,
+            file,
+            schemaName: payload.schemaName,
+            byteLength: payload.byteLength,
+            maxBytes: payload.maxBytes,
+        });
+        return payload;
     };
     const parallel = async (thunks) => {
         throwIfAborted();
@@ -183,6 +252,7 @@ export async function runWorkflow(script, options) {
         pipeline,
         phase,
         log,
+        compact,
         args: options.args,
         cwd: options.cwd,
         process: Object.freeze({ cwd: () => options.cwd }),
@@ -211,10 +281,20 @@ export async function runWorkflow(script, options) {
         filename: `${meta.name}.workflow.js`,
     }).runInContext(context, { timeout: 1_000 });
     await Promise.allSettled([...pending]);
-    const safeWorkflowResult = redactValue(result);
+    const sanitizedWorkflowResult = sanitizeValue("workflow.result", result, { suppressOnSecret: true });
+    const workflowResultSecretKinds = findingKinds(sanitizedWorkflowResult.findings);
+    if (workflowResultSecretKinds.length > 0) {
+        state.agentValidities.push("invalid");
+        state.validityReasons.push("secret-like workflow result suppressed");
+        state.secretSafeSuppressionCount++;
+        state.artifactSecretFindingCount += workflowResultSecretKinds.length;
+    }
+    const safeWorkflowResult = redactValue(sanitizedWorkflowResult.value);
     assertStructuredCloneable(safeWorkflowResult);
     const durationMs = Date.now() - started;
     const budget = budgetStatus();
+    const validity = mergeValidity(state.agentValidities);
+    const validityReasons = [...new Set(state.validityReasons)].sort();
     await store.writeJson("summary.json", {
         runId,
         meta,
@@ -225,7 +305,16 @@ export async function runWorkflow(script, options) {
         warnings: state.warnings,
         aggregateUsage: state.aggregateUsage,
         usageUnavailableCount: state.usageUnavailableCount,
+        compactCount: state.compactCount,
         budget,
+        validity,
+        validityReasons,
+        stdoutFallbackUsedCount: state.stdoutFallbackUsedCount,
+        secretSafeSuppressionCount: state.secretSafeSuppressionCount,
+        metadataOnlyAuditCount: state.metadataOnlyAuditCount,
+        artifactSecretFindingCount: state.artifactSecretFindingCount,
+        invalidAgentCount: state.invalidAgentCount,
+        diagnosticAgentCount: state.diagnosticAgentCount,
         result: safeWorkflowResult,
     });
     return {
@@ -240,7 +329,16 @@ export async function runWorkflow(script, options) {
         warnings: state.warnings,
         aggregateUsage: state.aggregateUsage,
         usageUnavailableCount: state.usageUnavailableCount,
+        compactCount: state.compactCount,
         budget,
+        validity,
+        validityReasons,
+        stdoutFallbackUsedCount: state.stdoutFallbackUsedCount,
+        secretSafeSuppressionCount: state.secretSafeSuppressionCount,
+        metadataOnlyAuditCount: state.metadataOnlyAuditCount,
+        artifactSecretFindingCount: state.artifactSecretFindingCount,
+        invalidAgentCount: state.invalidAgentCount,
+        diagnosticAgentCount: state.diagnosticAgentCount,
     };
 }
 function normalizeAgentOptions(value) {
@@ -260,6 +358,9 @@ function normalizeAgentOptions(value) {
     if (options.reasoningEffort !== undefined && !reasoningEfforts.includes(String(options.reasoningEffort))) {
         throw new Error("agent reasoningEffort must be minimal, low, medium, or high");
     }
+    if (options.profile !== undefined && !routeProfileIds().includes(String(options.profile))) {
+        throw new Error("agent profile must be scout, reviewer, security, or synthesizer");
+    }
     if (options.timeoutMs !== undefined && (typeof options.timeoutMs !== "number" || !Number.isFinite(options.timeoutMs))) {
         throw new Error("agent timeoutMs must be a finite number");
     }
@@ -269,6 +370,7 @@ function normalizeAgentOptions(value) {
         phase: optionalString(options.phase, "agent phase"),
         model: optionalString(options.model, "agent model"),
         reasoningEffort: options.reasoningEffort,
+        profile: options.profile,
         sandbox: options.sandbox,
         writeScope: options.writeScope,
     };
@@ -399,6 +501,9 @@ function assertAgentOptionsAst(node) {
         if (key === "reasoningEffort" && value.type === "Literal" && !reasoningEfforts.includes(String(value.value))) {
             throw new Error("workflow validation forbids unsupported reasoningEffort");
         }
+        if (key === "profile" && value.type === "Literal" && !routeProfileIds().includes(String(value.value))) {
+            throw new Error("workflow validation forbids unsupported route profile");
+        }
     }
 }
 function isMemberExpression(node, objectName, propertyName) {
@@ -451,6 +556,18 @@ function optionalString(value, name) {
     if (value === undefined)
         return undefined;
     return requireString(value, name);
+}
+function requireCompactSchemaName(value) {
+    if (typeof value !== "string" || !compactSchemaNames().includes(value)) {
+        throw new TypeError(`compact schema must be one of ${compactSchemaNames().join(", ")}`);
+    }
+    return value;
+}
+function requireCompactMaxBytes(value) {
+    if (!Number.isInteger(value) || Number(value) < 256 || Number(value) > 64_000) {
+        throw new TypeError("compact maxBytes must be an integer between 256 and 64000");
+    }
+    return Number(value);
 }
 function assertStructuredCloneable(value) {
     try {

@@ -31,6 +31,14 @@ export interface WorkflowMeta {
 }
 
 export type ReasoningEffort = "minimal" | "low" | "medium" | "high";
+export type RouteProfileId = "scout" | "reviewer" | "security" | "synthesizer";
+export type CompactSchemaName = "scout_map" | "validation_inventory" | "review_findings" | "final_synthesis";
+export type OutputAuditMode = "auto" | "full" | "metadata-only" | "none";
+export type ResolvedOutputAuditMode = "full" | "metadata-only" | "none";
+export type EvidenceValidity = "valid" | "diagnostic_only" | "invalid";
+export type AuditCompleteness = "full" | "metadata_only" | "none";
+export type ResultSource = "last_message" | "events" | "none";
+export type UsageSource = "jsonl" | "none";
 
 export interface TokenUsage {
   inputTokens: number;
@@ -47,12 +55,20 @@ export interface TokenBudgetStatus {
   exhausted: boolean;
 }
 
+export interface CompactPayload {
+  schemaName: CompactSchemaName;
+  maxBytes: number;
+  byteLength: number;
+  value: JsonValue;
+}
+
 export interface AgentOptions {
   label?: string;
   phase?: string;
   schema?: JsonSchema;
   model?: string;
   reasoningEffort?: ReasoningEffort;
+  profile?: RouteProfileId;
   sandbox?: "read-only" | "workspace-write";
   writeScope?: "none" | "worktree";
   timeoutMs?: number;
@@ -78,7 +94,32 @@ export interface WorkflowPolicy {
   allowedCommands: string[];
   allowedModels: string[];
   allowedReasoningEfforts: ReasoningEffort[];
+  allowedRouteProfiles: RouteProfileId[];
   secrets: "none" | "codex-auth-only";
+  outputAuditMode: OutputAuditMode;
+}
+
+export interface AuditMetadata {
+  outputAuditMode: OutputAuditMode;
+  resolvedOutputAuditMode: ResolvedOutputAuditMode;
+  auditCompleteness: AuditCompleteness;
+  resultSource: ResultSource;
+  usageSource: UsageSource;
+  stdoutBytes: number;
+  stderrBytes: number;
+  stdoutSha256: string;
+  stderrSha256: string;
+  stdoutPersisted: boolean;
+  stderrPersisted: boolean;
+  lastMessagePersisted: boolean;
+  eventsPersisted: boolean;
+  stdoutOverflowed: boolean;
+  stdoutFallbackUsed: boolean;
+  stdoutSuppressedForSecrets: boolean;
+  secretFindingKinds: string[];
+  eventsParsed: number;
+  validity: EvidenceValidity;
+  validityReasons: string[];
 }
 
 export interface AgentRunInput {
@@ -100,7 +141,17 @@ export interface AgentRunOutput {
   artifacts: Record<string, string>;
   model?: string;
   reasoningEffort?: ReasoningEffort;
+  profile?: RouteProfileId;
   usage?: TokenUsage | null;
+  validity?: EvidenceValidity;
+  validityReasons?: string[];
+  auditCompleteness?: AuditCompleteness;
+  resultSource?: ResultSource;
+  stdoutOverflowed?: boolean;
+  stdoutFallbackUsed?: boolean;
+  stdoutSuppressedForSecrets?: boolean;
+  secretFindingKinds?: string[];
+  auditMetadata?: AuditMetadata;
 }
 
 export interface AgentRunner {
@@ -120,4 +171,13 @@ export interface WorkflowRunResult<T = unknown> {
   aggregateUsage: TokenUsage;
   usageUnavailableCount: number;
   budget: TokenBudgetStatus;
+  compactCount?: number;
+  validity?: EvidenceValidity;
+  validityReasons?: string[];
+  stdoutFallbackUsedCount?: number;
+  secretSafeSuppressionCount?: number;
+  metadataOnlyAuditCount?: number;
+  artifactSecretFindingCount?: number;
+  invalidAgentCount?: number;
+  diagnosticAgentCount?: number;
 }
