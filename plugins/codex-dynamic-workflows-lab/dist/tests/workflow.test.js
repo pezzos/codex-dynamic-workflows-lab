@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
-import { readFile, mkdtemp } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { readFile, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { promisify } from "node:util";
 import { parseWorkflowScript, runWorkflow } from "../src/workflow.js";
+const execFileAsync = promisify(execFile);
 const fakeRunner = {
     async run(input) {
         return {
@@ -386,4 +389,39 @@ return { value }
     const agentResult = await readFile(join(dir, "artifacts", "runs", result.runId, "agents", "agent-001", "result.json"), "utf8");
     assert.doesNotMatch(summary, /rt_(summary|warning|log)_secret/);
     assert.doesNotMatch(agentResult, /rt_summary_secret/);
+});
+test("runWorkflow invalidates benchmark evidence when target git status changes", async () => {
+    const target = await mkdtemp(join(tmpdir(), "codex-flow-target-"));
+    const artifactRoot = await mkdtemp(join(tmpdir(), "codex-flow-artifacts-"));
+    await execFileAsync("git", ["init"], { cwd: target });
+    const writingRunner = {
+        async run() {
+            await writeFile(join(target, "unexpected.txt"), "changed", "utf8");
+            return {
+                agentId: "probe",
+                label: "probe",
+                status: "completed",
+                result: "ok",
+                durationMs: 1,
+                warnings: [],
+                artifacts: {},
+            };
+        },
+    };
+    const result = await runWorkflow(`
+export const meta = { name: "git_guard", description: "Demo workflow" }
+const value = await agent("probe", { label: "probe" })
+return { value }
+`, {
+        cwd: target,
+        artifactRoot,
+        runner: writingRunner,
+        policy: { maxAgents: 1, concurrency: 1 },
+    });
+    assert.equal(result.targetGitStatusGuardActive, true);
+    assert.equal(result.targetGitStatusChanged, true);
+    assert.equal(result.validity, "invalid");
+    assert.ok(result.validityReasons?.includes("target git status changed during workflow"));
+    const summary = JSON.parse(await readFile(join(artifactRoot, "runs", result.runId, "summary.json"), "utf8"));
+    assert.equal(summary.targetGitStatusChanged, true);
 });

@@ -1,5 +1,7 @@
 import vm from "node:vm";
 import { parse } from "acorn";
+import { spawn } from "node:child_process";
+import { relative, resolve } from "node:path";
 import { ArtifactStore } from "./artifacts.js";
 import { compactSchemaNames, compactValue } from "./compact.js";
 import { createArtifactHygiene, findingKinds, mergeValidity, sanitizeValue } from "./hygiene.js";
@@ -50,12 +52,15 @@ export async function runWorkflow(script, options) {
     const { meta, body } = parseWorkflowScript(script);
     const runId = options.runId ?? `${meta.name}-${Date.now()}`;
     const policy = normalizePolicy(options.policy);
+    const artifactRoot = options.artifactRoot ?? `${options.cwd}/.codex-workflows`;
     const store = new ArtifactStore({
-        root: options.artifactRoot ?? `${options.cwd}/.codex-workflows`,
+        root: artifactRoot,
         runId,
         hygiene: createArtifactHygiene(policy),
     });
+    const targetGitStatusGuardActive = !pathInside(resolve(artifactRoot), resolve(options.cwd));
     await store.init(meta, policy);
+    const targetGitStatusBefore = targetGitStatusGuardActive ? await readGitStatus(options.cwd) : null;
     const state = {
         logs: [],
         phases: [],
@@ -281,6 +286,15 @@ export async function runWorkflow(script, options) {
         filename: `${meta.name}.workflow.js`,
     }).runInContext(context, { timeout: 1_000 });
     await Promise.allSettled([...pending]);
+    const targetGitStatusAfter = targetGitStatusGuardActive ? await readGitStatus(options.cwd) : null;
+    const targetGitStatusChanged = targetGitStatusBefore !== null &&
+        targetGitStatusAfter !== null &&
+        targetGitStatusBefore !== targetGitStatusAfter;
+    if (targetGitStatusChanged) {
+        state.agentValidities.push("invalid");
+        state.validityReasons.push("target git status changed during workflow");
+        state.warnings.push("target git status changed during workflow");
+    }
     const sanitizedWorkflowResult = sanitizeValue("workflow.result", result, { suppressOnSecret: true });
     const workflowResultSecretKinds = findingKinds(sanitizedWorkflowResult.findings);
     if (workflowResultSecretKinds.length > 0) {
@@ -315,6 +329,10 @@ export async function runWorkflow(script, options) {
         artifactSecretFindingCount: state.artifactSecretFindingCount,
         invalidAgentCount: state.invalidAgentCount,
         diagnosticAgentCount: state.diagnosticAgentCount,
+        targetGitStatusBefore,
+        targetGitStatusAfter,
+        targetGitStatusChanged,
+        targetGitStatusGuardActive,
         result: safeWorkflowResult,
     });
     return {
@@ -339,7 +357,55 @@ export async function runWorkflow(script, options) {
         artifactSecretFindingCount: state.artifactSecretFindingCount,
         invalidAgentCount: state.invalidAgentCount,
         diagnosticAgentCount: state.diagnosticAgentCount,
+        targetGitStatusBefore,
+        targetGitStatusAfter,
+        targetGitStatusChanged,
+        targetGitStatusGuardActive,
     };
+}
+function pathInside(path, parent) {
+    const rel = relative(parent, path);
+    return rel === "" || (!rel.startsWith("..") && !rel.startsWith("/") && rel !== "..");
+}
+async function readGitStatus(cwd) {
+    const result = await runSimpleProcess({
+        command: "git",
+        args: ["status", "--porcelain=v1", "--untracked-files=all"],
+        cwd,
+        timeoutMs: 10_000,
+    }).catch(() => null);
+    if (!result || result.exitCode !== 0)
+        return null;
+    return result.stdout;
+}
+function runSimpleProcess(input) {
+    return new Promise((resolve) => {
+        const child = spawn(input.command, input.args, {
+            cwd: input.cwd,
+            stdio: ["ignore", "pipe", "pipe"],
+        });
+        let stdout = "";
+        let stderr = "";
+        const timer = setTimeout(() => {
+            child.kill("SIGKILL");
+        }, input.timeoutMs);
+        child.stdout.setEncoding("utf8");
+        child.stderr.setEncoding("utf8");
+        child.stdout.on("data", (chunk) => {
+            stdout += chunk;
+        });
+        child.stderr.on("data", (chunk) => {
+            stderr += chunk;
+        });
+        child.on("error", () => {
+            clearTimeout(timer);
+            resolve({ exitCode: null, stdout: "", stderr: "" });
+        });
+        child.on("close", (exitCode) => {
+            clearTimeout(timer);
+            resolve({ exitCode, stdout, stderr });
+        });
+    });
 }
 function normalizeAgentOptions(value) {
     if (!value || typeof value !== "object")

@@ -9,7 +9,7 @@ internals.
 
 ## Status
 
-- Current version: `0.1.11`
+- Current version: `0.1.12`
 - Plugin: Codex marketplace-ready experimental lab
 - Public-safety status: published as an experimental reader-facing lab artifact
 - Real workers: authenticated read-only `codex exec` smoke and one four-worker
@@ -171,6 +171,13 @@ hardening:
 - `summary.json` now separates process completion from evidence validity through
   `validity`, `validityReasons`, `invalidAgentCount`, `diagnosticAgentCount`,
   `metadataOnlyAuditCount`, and secret-suppression counters.
+- when workflow artifacts are stored outside the target repository, `summary.json`
+  records `targetGitStatusBefore`, `targetGitStatusAfter`,
+  `targetGitStatusChanged`, and `targetGitStatusGuardActive` so benchmark runs can
+  detect unexpected target worktree drift.
+- the stock classic and routed examples now pass JSON schemas to workers and forbid
+  source excerpts, literal secret values, and assignment right-hand-side values in
+  worker findings.
 
 The routed example is validation-friendly and accepts model names through `args`, so
 users can choose the Codex models available in their own environment:
@@ -178,6 +185,11 @@ users can choose the Codex models available in their own environment:
 ```bash
 node dist/src/cli.js run examples/routed-repo-review.workflow.js --fake
 ```
+
+For measured real-repo comparisons, pass a bounded scope through `--args` and keep the
+artifact root outside the target repository. A run is not benchmark evidence unless
+`validity` is `valid`, usage is complete, no stdout fallback was used, postflight
+artifact scan is clean, and `targetGitStatusChanged` is false.
 
 Useful benchmark helpers:
 

@@ -472,3 +472,27 @@ Workflows replacement.
 - `scope_note`: this is a prompt/protocol fix, not a runtime change. The runtime
   behavior from `0.1.10` remains correct.
 - `version`: bumped package, plugin manifest, and MCP server version to `0.1.11`.
+
+## Fix 2026-06-05 - Hermes reduced campaign output invalidation
+
+- `status`: done
+- `issue`: Hermes reduced campaign `dwave-2026-06-05-hermes-reduced-02` passed
+  preflight (`ok: true`, `blockers: []`) and completed both Method C and Method D, but
+  both workflow summaries were `invalid`. Every worker exceeded stdout policy, used the
+  last-message fallback, and had result/output suppressed by artifact hygiene. Method D
+  also used more tokens than Method C in this diagnostic run, so no token-reduction
+  claim is valid.
+- `target_drift`: the operator report also detected a target worktree change during the
+  campaign. The workflow commands were read-only, but benchmark evidence still needs a
+  harness-level pre/post git-status guard because external or unexpected target drift
+  invalidates comparison.
+- `fixes`: add workflow-level `targetGitStatusBefore`, `targetGitStatusAfter`,
+  `targetGitStatusChanged`, and `targetGitStatusGuardActive` fields when artifacts are
+  stored outside the target repository; mark evidence `invalid` when the target git
+  status changes during the run; harden the stock classic and routed examples with
+  JSON schemas, bounded findings, identity fields, no source excerpts, and no literal
+  secret or assignment-value output.
+- `scope_note`: this does not relax artifact hygiene. Secret-like worker output still
+  invalidates the run. The fix makes future campaigns fail for clearer reasons and
+  reduces the chance of oversized free-form outputs.
+- `version`: bumped package, plugin manifest, and MCP server version to `0.1.12`.

@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 
 // src/mcp-server.ts
-import { spawn as spawn2 } from "node:child_process";
+import { spawn as spawn3 } from "node:child_process";
 import { access, mkdir as mkdir3, readFile as readFile3, writeFile as writeFile3 } from "node:fs/promises";
-import { join as join3, resolve as resolve3 } from "node:path";
+import { join as join3, resolve as resolve4 } from "node:path";
 import { fileURLToPath } from "node:url";
 
 // src/artifacts.ts
@@ -745,7 +745,7 @@ async function readTextFile(path) {
   }
 }
 async function runProcess(options) {
-  return new Promise((resolve4) => {
+  return new Promise((resolve5) => {
     const child = spawn(options.command, options.args, {
       cwd: options.cwd,
       env: options.env,
@@ -778,11 +778,11 @@ async function runProcess(options) {
     });
     child.on("error", (error) => {
       clearTimeout(timer);
-      resolve4({ stdout, stderr: stderr + error.message, exitCode: 127, timedOut });
+      resolve5({ stdout, stderr: stderr + error.message, exitCode: 127, timedOut });
     });
     child.on("close", (exitCode) => {
       clearTimeout(timer);
-      resolve4({ stdout, stderr, exitCode, timedOut });
+      resolve5({ stdout, stderr, exitCode, timedOut });
     });
     child.stdin.end(options.stdin);
   });
@@ -797,7 +797,7 @@ function extractFinalResult(events) {
 }
 
 // src/version.ts
-var packageVersion = "0.1.11";
+var packageVersion = "0.1.12";
 
 // src/workflow.ts
 import vm from "node:vm";
@@ -6453,6 +6453,10 @@ function parse3(input, options) {
   return Parser.parse(input, options);
 }
 
+// src/workflow.ts
+import { spawn as spawn2 } from "node:child_process";
+import { relative, resolve as resolve3 } from "node:path";
+
 // src/compact.ts
 var schemaNames = ["scout_map", "validation_inventory", "review_findings", "final_synthesis"];
 function compactSchemaNames() {
@@ -6624,12 +6628,15 @@ async function runWorkflow(script, options) {
   const { meta, body } = parseWorkflowScript(script);
   const runId = options.runId ?? `${meta.name}-${Date.now()}`;
   const policy = normalizePolicy(options.policy);
+  const artifactRoot = options.artifactRoot ?? `${options.cwd}/.codex-workflows`;
   const store = new ArtifactStore({
-    root: options.artifactRoot ?? `${options.cwd}/.codex-workflows`,
+    root: artifactRoot,
     runId,
     hygiene: createArtifactHygiene(policy)
   });
+  const targetGitStatusGuardActive = !pathInside(resolve3(artifactRoot), resolve3(options.cwd));
   await store.init(meta, policy);
+  const targetGitStatusBefore = targetGitStatusGuardActive ? await readGitStatus(options.cwd) : null;
   const state = {
     logs: [],
     phases: [],
@@ -6845,6 +6852,13 @@ ${body}
     filename: `${meta.name}.workflow.js`
   }).runInContext(context, { timeout: 1e3 });
   await Promise.allSettled([...pending]);
+  const targetGitStatusAfter = targetGitStatusGuardActive ? await readGitStatus(options.cwd) : null;
+  const targetGitStatusChanged = targetGitStatusBefore !== null && targetGitStatusAfter !== null && targetGitStatusBefore !== targetGitStatusAfter;
+  if (targetGitStatusChanged) {
+    state.agentValidities.push("invalid");
+    state.validityReasons.push("target git status changed during workflow");
+    state.warnings.push("target git status changed during workflow");
+  }
   const sanitizedWorkflowResult = sanitizeValue("workflow.result", result, { suppressOnSecret: true });
   const workflowResultSecretKinds = findingKinds(sanitizedWorkflowResult.findings);
   if (workflowResultSecretKinds.length > 0) {
@@ -6879,6 +6893,10 @@ ${body}
     artifactSecretFindingCount: state.artifactSecretFindingCount,
     invalidAgentCount: state.invalidAgentCount,
     diagnosticAgentCount: state.diagnosticAgentCount,
+    targetGitStatusBefore,
+    targetGitStatusAfter,
+    targetGitStatusChanged,
+    targetGitStatusGuardActive,
     result: safeWorkflowResult
   });
   return {
@@ -6902,8 +6920,55 @@ ${body}
     metadataOnlyAuditCount: state.metadataOnlyAuditCount,
     artifactSecretFindingCount: state.artifactSecretFindingCount,
     invalidAgentCount: state.invalidAgentCount,
-    diagnosticAgentCount: state.diagnosticAgentCount
+    diagnosticAgentCount: state.diagnosticAgentCount,
+    targetGitStatusBefore,
+    targetGitStatusAfter,
+    targetGitStatusChanged,
+    targetGitStatusGuardActive
   };
+}
+function pathInside(path, parent) {
+  const rel = relative(parent, path);
+  return rel === "" || !rel.startsWith("..") && !rel.startsWith("/") && rel !== "..";
+}
+async function readGitStatus(cwd) {
+  const result = await runSimpleProcess({
+    command: "git",
+    args: ["status", "--porcelain=v1", "--untracked-files=all"],
+    cwd,
+    timeoutMs: 1e4
+  }).catch(() => null);
+  if (!result || result.exitCode !== 0) return null;
+  return result.stdout;
+}
+function runSimpleProcess(input) {
+  return new Promise((resolve5) => {
+    const child = spawn2(input.command, input.args, {
+      cwd: input.cwd,
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+    let stdout = "";
+    let stderr = "";
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+    }, input.timeoutMs);
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
+    child.on("error", () => {
+      clearTimeout(timer);
+      resolve5({ exitCode: null, stdout: "", stderr: "" });
+    });
+    child.on("close", (exitCode) => {
+      clearTimeout(timer);
+      resolve5({ exitCode, stdout, stderr });
+    });
+  });
 }
 function normalizeAgentOptions(value) {
   if (!value || typeof value !== "object") return {};
@@ -7073,7 +7138,7 @@ function createLimiter(limit) {
     queue.shift()?.();
   };
   return async (fn) => {
-    if (active >= limit) await new Promise((resolve4) => queue.push(resolve4));
+    if (active >= limit) await new Promise((resolve5) => queue.push(resolve5));
     active++;
     try {
       return await fn();
@@ -7209,8 +7274,8 @@ async function callTool(name, args) {
   if (name === "workflow_submit") {
     if (!args.policy) throw new Error("workflow_submit requires policy");
     if (!args.artifacts) throw new Error("workflow_submit requires artifacts outside the target repository");
-    const cwd = resolve3(String(args.cwd ?? process.cwd()));
-    const artifactRoot = resolve3(String(args.artifacts));
+    const cwd = resolve4(String(args.cwd ?? process.cwd()));
+    const artifactRoot = resolve4(String(args.artifacts));
     const policy = normalizePolicy(args.policy);
     const parsed = parseWorkflowScript(String(args.script ?? ""));
     const runId = String(args.runId ?? `${parsed.meta.name}-${Date.now()}`);
@@ -7233,7 +7298,7 @@ async function callTool(name, args) {
       throw new Error(`workflow_submit rejected secret-like job payload: ${safeJob.secretFindingKinds.join(", ")}`);
     }
     await writeFile3(jobPath, JSON.stringify(safeJob.value, null, 2), "utf8");
-    const child = spawn2(process.execPath, [entryPath, "--run-workflow-job", jobPath], {
+    const child = spawn3(process.execPath, [entryPath, "--run-workflow-job", jobPath], {
       cwd,
       detached: true,
       stdio: "ignore"
@@ -7250,7 +7315,7 @@ async function callTool(name, args) {
   if (name === "workflow_status" || name === "workflow_result") {
     if (!args.artifacts) throw new Error(`${name} requires artifacts`);
     if (!args.runId) throw new Error(`${name} requires runId`);
-    const artifactRoot = resolve3(String(args.artifacts));
+    const artifactRoot = resolve4(String(args.artifacts));
     const runId = String(args.runId);
     const runRoot = join3(artifactRoot, "runs", runId);
     const summary = await readSummary(runRoot);
@@ -7267,7 +7332,7 @@ async function callTool(name, args) {
   if (name === "workflow_artifacts") {
     if (!args.artifacts) throw new Error("workflow_artifacts requires artifacts");
     if (!args.runId) throw new Error("workflow_artifacts requires runId");
-    const artifactRoot = resolve3(String(args.artifacts));
+    const artifactRoot = resolve4(String(args.artifacts));
     return text({ runId: args.runId, artifactRoot: join3(artifactRoot, "runs", String(args.runId)) });
   }
   throw new Error(`unknown tool: ${name}`);

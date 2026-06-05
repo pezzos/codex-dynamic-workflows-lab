@@ -180,4 +180,8 @@ export interface WorkflowRunResult<T = unknown> {
   artifactSecretFindingCount?: number;
   invalidAgentCount?: number;
   diagnosticAgentCount?: number;
+  targetGitStatusBefore?: string | null;
+  targetGitStatusAfter?: string | null;
+  targetGitStatusChanged?: boolean;
+  targetGitStatusGuardActive?: boolean;
 }

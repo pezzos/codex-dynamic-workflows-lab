@@ -293,11 +293,10 @@ Each role must return verdict/evidence/findings/limits/next_step. Then synthesiz
 
 Method C, classic Dynamic Workflow:
 Use the Dynamic Workflow plugin if available.
-Submit a deterministic read-only workflow with four parallel agents:
-- label: architecture
-- label: tests
-- label: security
-- label: docs
+Submit `examples/repo-review.workflow.js` or an equivalent deterministic read-only
+workflow with structured worker output. The stock example passes a JSON schema to each
+worker, caps findings, requires identity fields, and forbids source excerpts or literal
+secret values.
 Each worker prompt must force the identity header:
 AGENT_ID: <label>
 ROLE: <role>
@@ -314,18 +313,22 @@ Treat `workflow_submit` as non-blocking. Record the immediate `runId`, then poll
 call returning before worker completion is expected behavior.
 Record `validity`, `validityReasons`, `auditCompleteness`,
 `stdoutFallbackUsedCount`, `secretSafeSuppressionCount`, `invalidAgentCount`, and
-`diagnosticAgentCount`. Do not rank timing or token use for a run marked `invalid`.
+`diagnosticAgentCount`. Also record `targetGitStatusGuardActive`,
+`targetGitStatusChanged`, and whether the artifact root was outside the target repo. Do
+not rank timing or token use for a run marked `invalid`.
 Also run `benchmark-artifact-scan` on the run artifact directory before comparing it.
 
 Method D, routed Dynamic Workflow:
 Use the Dynamic Workflow plugin if available.
-Submit the routed workflow shape with scout profiles, compact scout forwarding, reviewer
-profiles, security profile, and final compact synthesis. Worker prompts must force the
-same identity header format as Method C, with TEST_ID `<campaign id>-dynamic-routed`.
+Submit `examples/routed-repo-review.workflow.js` or an equivalent routed workflow shape
+with a scout profile, compact bounded context, reviewer profile, security profile, and
+final compact synthesis. Do not forward raw scout output into downstream prompts.
+Worker prompts must force the same identity header format as Method C, with TEST_ID
+`<campaign id>-dynamic-routed`.
 Record route profiles, reasoning efforts, aggregate usage, compact artifact count,
 stdout fallback warnings, and benchmark validity. Compare quality and token discipline
 against Method C; do not claim lower cost unless usage data is complete, both runs are
-`valid`, and postflight artifact scans are clean.
+`valid`, target git status stayed unchanged, and postflight artifact scans are clean.
 
 Wave 4: Safety probes:
 Use Dynamic Workflow if available; otherwise run as a read-only reasoning baseline.

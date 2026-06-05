@@ -1,8 +1,9 @@
 # Benchmark Harness
 
-Version `0.1.8` keeps the deterministic benchmark harness and adds evidence-validity
-rules for output audit results. It does not prove lower token cost by itself. It
-provides the guardrails needed before running another measured campaign.
+Version `0.1.12` keeps the deterministic benchmark harness, evidence-validity rules,
+target preflight, artifact postflight, structured worker-output examples, and
+workflow-level target git-status drift detection. It does not prove lower token cost by
+itself. It provides the guardrails needed before running another measured campaign.
 
 ## CLI
 
@@ -53,6 +54,10 @@ Run it before using any workflow result in a benchmark table.
 Preflight `warnings` should be copied into the final report, but they do not block a
 run when `ok: true` and `blockers` is empty.
 
+When artifacts are stored outside the target repository, workflow summaries also record
+target git status before and after the run. A changed target status invalidates the
+benchmark evidence even if the workers were launched with read-only sandboxing.
+
 ## Validity Rules
 
 Benchmark results should be classified before they are used in the article.
@@ -69,6 +74,7 @@ validity, not on `completed` or `submitted` status.
 - usage data is available;
 - no stdout fallback was needed;
 - no secret-like artifact finding was recorded;
+- target git status did not change during the workflow;
 - output audit completeness is not `none`; `metadata_only` is allowed when the result
   contract, usage data, and postflight artifact scan are clean;
 - output contract was produced directly.
@@ -88,14 +94,16 @@ validity, not on `completed` or `submitted` status.
 - operator intervention differs across methods.
 - a secret-like artifact finding was recorded;
 - an artifact leak was detected.
+- target git status changed during the workflow.
 
 An `invalid` run family must not be used for token/timing rankings. A
 `diagnostic_only` run can be quoted for failure analysis or ergonomics, but not as proof
 that one method is cheaper or better.
 
-The Hermes diagnostic run is failure-analysis evidence only. It must not be used for
-token rankings, and no real Hermes rerun should be treated as comparable until the
-artifact-hygiene incident is handled and the rerun has valid postflight evidence.
+The Hermes diagnostic runs are failure-analysis evidence only. They must not be used
+for token rankings, and no real Hermes rerun should be treated as comparable until the
+artifact-hygiene incident is handled, target git status stays stable, and the rerun has
+valid postflight evidence.
 
 ## Cohort Rule
 
