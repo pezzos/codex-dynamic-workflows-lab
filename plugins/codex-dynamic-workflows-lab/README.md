@@ -12,6 +12,8 @@ internals.
 - Current version: `0.1.12`
 - Plugin: Codex marketplace-ready experimental lab
 - Public-safety status: published as an experimental reader-facing lab artifact
+- Project activity: paused after the `0.1.12` Hermes diagnostic because real
+  multi-agent campaigns are currently too token-heavy for blind iteration
 - Real workers: authenticated read-only `codex exec` smoke and one four-worker
   comparative campaign have completed
 - Writes: read-only by default; write mode is not validated for production use
@@ -189,7 +191,8 @@ node dist/src/cli.js run examples/routed-repo-review.workflow.js --fake
 For measured real-repo comparisons, pass a bounded scope through `--args` and keep the
 artifact root outside the target repository. A run is not benchmark evidence unless
 `validity` is `valid`, usage is complete, no stdout fallback was used, postflight
-artifact scan is clean, and `targetGitStatusChanged` is false.
+artifact scan is clean, and `targetGitStatusChanged` is false. The next campaign should
+also set an explicit token budget and stop as soon as the run becomes invalid.
 
 Useful benchmark helpers:
 

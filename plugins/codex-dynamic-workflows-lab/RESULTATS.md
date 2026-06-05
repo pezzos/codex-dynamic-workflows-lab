@@ -496,3 +496,21 @@ Workflows replacement.
   invalidates the run. The fix makes future campaigns fail for clearer reasons and
   reduces the chance of oversized free-form outputs.
 - `version`: bumped package, plugin manifest, and MCP server version to `0.1.12`.
+
+## Pause 2026-06-05 - Token budget stop
+
+- `status`: paused
+- `reason`: the lab is now useful as an experimental artifact, but the latest real
+  campaigns are too expensive to keep iterating without a narrower protocol. The
+  Hermes reduced run consumed more than 3M tokens per measured method and still produced
+  invalid benchmark evidence.
+- `current_supported_claim`: Codex Dynamic Workflows Lab can orchestrate bounded
+  read-only Codex workers, preserve traceable artifacts, enforce policy and artifact
+  hygiene, and expose benchmark validity metadata. It does not yet prove routed
+  workflows reduce token use or preserve finding quality.
+- `resume_condition`: resume only with a smaller target scope, explicit `maxTokens`,
+  structured worker output, artifact root outside the target repo, stable target git
+  status, clean postflight scan, and a stop rule that aborts comparison once validity is
+  no longer `valid`.
+- `article_update`: the Project Pezzos article was updated to reflect version `0.1.12`,
+  the invalid Hermes diagnostic, the token cost, and the pause.
