@@ -457,3 +457,18 @@ Workflows replacement.
 - `validation`: pending final `npm run check`, `npm run plugin:validate`, and
   `npm run pack:dry` for package `0.1.10`.
 - `version`: bumped package, plugin manifest, and MCP server version to `0.1.10`.
+
+## Fix 2026-06-05 - Reduced campaign prompt stop rule
+
+- `status`: done
+- `issue`: the reduced campaign prompt still allowed an agent to treat target preflight
+  warnings as a hard stop. Hermes returned `ok: true`, `findings: []`, and
+  `blockers: []`, but the agent stopped because warnings contained env-like and
+  auth-pattern surfaces.
+- `fix`: update the fresh-session protocol hard rules: preflight warnings are not a stop
+  condition. Real worker execution stops only when `benchmark-preflight` returns
+  `ok: false` or a non-empty `blockers` array. Warnings must be copied into the final
+  report but must not force diagnostic-only status by themselves.
+- `scope_note`: this is a prompt/protocol fix, not a runtime change. The runtime
+  behavior from `0.1.10` remains correct.
+- `version`: bumped package, plugin manifest, and MCP server version to `0.1.11`.

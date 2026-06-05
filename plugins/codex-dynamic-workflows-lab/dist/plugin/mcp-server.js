@@ -797,7 +797,7 @@ function extractFinalResult(events) {
 }
 
 // src/version.ts
-var packageVersion = "0.1.10";
+var packageVersion = "0.1.11";
 
 // src/workflow.ts
 import vm from "node:vm";

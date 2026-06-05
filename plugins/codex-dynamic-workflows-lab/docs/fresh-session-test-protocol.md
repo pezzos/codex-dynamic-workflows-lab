@@ -231,6 +231,9 @@ Hard rules:
 - Do not create public resources.
 - Do not use connectors.
 - Do not depend on arbitrary third-party network calls.
+- Preflight warnings are not a stop condition. Stop real worker execution only when
+  `benchmark-preflight` returns `ok: false` or a non-empty `blockers` array. If
+  `ok: true` and `blockers: []`, continue and report warning counts.
 - For Method C and Method D real workers, use a read-only workflow policy with
   `secrets: "codex-auth-only"` so workers can authenticate without inheriting the
   parent Codex config/plugins/cache/history.
@@ -263,6 +266,8 @@ Wave 2: Deterministic function tests in LAB_REPO:
   `node dist/src/cli.js benchmark-manifest "$TARGET_REPO" --campaign-id "$TEST_CAMPAIGN_ID" --method workflow-routed --profile scout --profile reviewer --profile security --profile synthesizer`
   `node dist/src/cli.js benchmark-preflight "$TARGET_REPO" --target-mode real_repo`
   `npm run plugin:validate`
+- If `benchmark-preflight` returns warnings but `ok: true` and `blockers: []`, continue
+  to real worker execution. Do not mark the campaign diagnostic-only for warnings alone.
 - Validate unsafe snippets without executing them:
   Math.random(), Date.now(), import("node:fs"), process.env, and read-only policy
   widening to workspace-write. Also validate unsupported route profiles and unsafe
@@ -319,7 +324,8 @@ profiles, security profile, and final compact synthesis. Worker prompts must for
 same identity header format as Method C, with TEST_ID `<campaign id>-dynamic-routed`.
 Record route profiles, reasoning efforts, aggregate usage, compact artifact count,
 stdout fallback warnings, and benchmark validity. Compare quality and token discipline
-against Method C; do not claim lower cost unless usage data is complete.
+against Method C; do not claim lower cost unless usage data is complete, both runs are
+`valid`, and postflight artifact scans are clean.
 
 Wave 4: Safety probes:
 Use Dynamic Workflow if available; otherwise run as a read-only reasoning baseline.

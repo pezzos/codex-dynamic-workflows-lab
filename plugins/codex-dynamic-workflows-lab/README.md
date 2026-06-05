@@ -9,7 +9,7 @@ internals.
 
 ## Status
 
-- Current version: `0.1.10`
+- Current version: `0.1.11`
 - Plugin: Codex marketplace-ready experimental lab
 - Public-safety status: published as an experimental reader-facing lab artifact
 - Real workers: authenticated read-only `codex exec` smoke and one four-worker
